@@ -27,7 +27,7 @@ class ClipTokenizer(BaseModule):
         pretrained_model_name_or_path = self.cfg.pretrained_model_name_or_path
 
         from transformers import CLIPTextModel, CLIPTokenizer
-        text_tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-2-depth",
+        text_tokenizer = CLIPTokenizer.from_pretrained("stabilityai/stable-diffusion-3.5-large",
                                                        subfolder="tokenizer")
         self.register_non_module(
             "text_tokenizer",
@@ -36,7 +36,8 @@ class ClipTokenizer(BaseModule):
 
         self.register_non_module(
             "text_encoder",
-            CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2-depth", subfolder="text_encoder").to(
+            CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-3.5-large", 
+                                         subfolder="text_encoder").to(
                 self.device, dtype=self.weight_dtype
             ),
         )
@@ -102,9 +103,9 @@ class ClipTokenizer(BaseModule):
 
         text_encoder = self.non_module("text_encoder")
 
-        # local [B, 77, 1024]
+        # local [B, 77, 768] - SD 3.5 CLIP-L has 768-dim embeddings
         # text_embeddings = text_encoder(prompt_ids)[0].to(self.device, dtype=self.weight_dtype)
-        # global [B, 1024]
+        # global [B, 768] - pooled text embedding
         text_embeddings = text_encoder(prompt_ids)[1].to(self.device, dtype=self.weight_dtype)
 
         return text_embeddings

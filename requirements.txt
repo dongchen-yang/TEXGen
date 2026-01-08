@@ -4,13 +4,13 @@ omegaconf==2.3.0
 xformers==0.0.22.post7+cu118 --index-url https://download.pytorch.org/whl/cu118
 accelerate==0.24.1
 safetensors
-bitsandbytes
+bitsandbytes==0.42.0
 wandb
 jaxtyping
 typeguard
 Pillow
 matplotlib
-opencv-python
+opencv-python==4.9.0.80
 imageio
 torchdyn
 lpips
@@ -22,4 +22,4 @@ openexr
 trimesh
 git+https://github.com/NVlabs/nvdiffrast.git
 git+https://github.com/mit-han-lab/torchsparse.git
-flash-attn --no-build-isolation
+flash-attn==2.7.3 --no-build-isolation

@@ -126,6 +126,7 @@ checkpoint:
   save_last: true # whether to save at each validation time
   save_top_k: 10
   every_n_epochs: 5 #${trainer.max_epochs} # do not save at all for debug purpose
-  monitor: "val_psnr"  # Replace with your actual metric name
+  monitor: "val/psnr"  # Replace with your actual metric name
   mode: "max"
+  save_on_train_epoch_end: false  # Wait for validation before saving
 

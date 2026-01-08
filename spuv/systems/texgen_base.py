@@ -368,25 +368,47 @@ class TEXGenDiffusion(BaseSystem):
             return None
 
         try:
-            if self.use_ema and self.val_with_ema:
-                with self.ema_scope("Validation with ema weights"):
+            # Disable autocast for validation to avoid bfloat16 issues with spconv
+            with torch.cuda.amp.autocast(enabled=False):
+                if self.use_ema and self.val_with_ema:
+                    with self.ema_scope("Validation with ema weights"):
+                        texture_map_outputs = self.test_pipeline(batch)
+                else:
+                    spuv.info("Validation without ema weights")
                     texture_map_outputs = self.test_pipeline(batch)
-            else:
-                spuv.info("Validation without ema weights")
-                texture_map_outputs = self.test_pipeline(batch)
         except Exception as e:
+            import traceback
             spuv.info(f"Error in test pipeline: {e}")
+            spuv.info(f"Full traceback:\n{traceback.format_exc()}")
             return None
 
-        render_images = {}
-        background_color = self.render_background_color #if not self.cfg.random_background_color else self.generate_random_color()
-        for key in ["pred_x0", "gt_x0"]:
-            value = texture_map_outputs[key]
-            if self.cfg.data_normalization:
-                img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"]
-            else:
-                img = value * texture_map_outputs["mask_map"]
-            # Important to flip the uv map for possible meshlab loading, for rendering using NvDiffRasterizer, do not flip!
+        # For validation: compute metrics and save UV maps only
+        assert len(batch["scene_id"]) == 1
+        save_str = batch["scene_id"][0]
+        
+        # Get predicted and ground truth UV maps
+        pred_x0 = texture_map_outputs["pred_x0"]
+        gt_x0 = texture_map_outputs["gt_x0"]
+        mask_map = texture_map_outputs["mask_map"]
+        
+        # Denormalize if needed
+        if self.cfg.data_normalization:
+            pred_img = (pred_x0 * 0.5 + 0.5) * mask_map
+            gt_img = (gt_x0 * 0.5 + 0.5) * mask_map
+        else:
+            pred_img = pred_x0 * mask_map
+            gt_img = gt_x0 * mask_map
+        
+        # Compute MSE and PSNR on UV space
+        mse = torch.mean((pred_img - gt_img) ** 2)
+        psnr = -10 * torch.log10(mse + 1e-8)
+        
+        # Log metrics
+        self.log('val/mse', mse, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val/psnr', psnr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        
+        # Save UV maps (flipped for visualization)
+        for key, img in [("pred_x0", pred_img), ("gt_x0", gt_img)]:
             flip_img = torch.flip(img, dims=[2])
             img_format = [{
                 "type": "rgb",
@@ -395,42 +417,28 @@ class TEXGenDiffusion(BaseSystem):
             }]
 
             self.save_image_grid(
-                f"it{self.true_global_step}-test/{key}_{self.global_rank}_{batch_idx}.jpg",
+                f"it{self.true_global_step}-test/{save_str}_{key}.png",
                 img_format,
                 name=f"test_step_output_{self.global_rank}_{batch_idx}",
                 step=self.true_global_step,
             )
-
-            img = rearrange(img, "B C H W -> B H W C")
-            mvp_mtx = batch['mvp_mtx']
-            mesh = batch['mesh']
-            height = batch['height']
-            width = batch['width']
-            # TODO: UV padding
-            pad_img = uv_padding(img.squeeze(0), texture_map_outputs['mask_map'].squeeze(0).squeeze(0), iterations=2)
-            render_out = render_batched_meshes(self.ctx, mesh, pad_img, mvp_mtx, height, width, background_color)
-            # render_out = render_batched_meshes(self.ctx, mesh, img, mvp_mtx, height, width, background_color)
-            img_format = [{
-                "type": "rgb",
-                "img": rearrange(render_out, "B (V1 V2) H W C -> (B V1 H) (V2 W) C", V1=4),
-                "kwargs": {"data_format": "HWC"},
-            }]
-
-            self.save_image_grid(
-                f"it{self.true_global_step}-test/render_{key}_{self.global_rank}_{batch_idx}.jpg",
-                img_format,
-                name=f"test_step_output_{self.global_rank}_{batch_idx}",
-                step=self.true_global_step,
-            )
-
-            render_images[key] = torch.clamp(rearrange(render_out, "B V H W C -> (B V) C H W"), min=0, max=1)
-
-        ssim_metric = self.ssim_metric_fn(render_images["pred_x0"], render_images["gt_x0"])
-        psnr_metric = self.psnr_metric_fn(render_images["pred_x0"], render_images["gt_x0"])
-        lpips_loss = self.lpips_loss_fn(render_images["pred_x0"], render_images["gt_x0"], input_range=(0, 1)).mean()
-        self.log('val_ssim', ssim_metric, on_step=True, on_epoch=True, prog_bar=False, logger=True)
-        self.log('val_psnr', psnr_metric, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val_lpips', lpips_loss, on_step=True, on_epoch=True, prog_bar=False, logger=True)
+        
+        # Save side-by-side comparison image (pred | gt | mask)
+        flip_pred = torch.flip(pred_img, dims=[2])
+        flip_gt = torch.flip(gt_img, dims=[2])
+        flip_mask = torch.flip(mask_map.repeat(1, 3, 1, 1), dims=[2])  # Repeat mask to 3 channels
+        comparison_img_format = [{
+            "type": "rgb",
+            "img": rearrange(torch.cat([flip_pred, flip_gt, flip_mask], dim=-1), "B C H W -> (B H) W C"),
+            "kwargs": {"data_format": "HWC"},
+        }]
+        
+        self.save_image_grid(
+            f"it{self.true_global_step}-test/{save_str}_comparison.png",
+            comparison_img_format,
+            name=f"test_step_comparison_{self.global_rank}_{batch_idx}",
+            step=self.true_global_step,
+        )
 
         if self.cfg.test_save_json:
             save_str = ""
@@ -454,16 +462,38 @@ class TEXGenDiffusion(BaseSystem):
                 img = rearrange(img, "B C H W -> B H W C")
                 mvp_mtx = batch['mvp_mtx']
                 mesh = batch['mesh']
-                height = batch['height']
-                width = batch['width']
+                # Extract integer values from height/width tensors/lists
+                if torch.is_tensor(batch['height']):
+                    height = batch['height'].item()
+                elif isinstance(batch['height'], (list, tuple)):
+                    height = int(batch['height'][0])
+                else:
+                    height = int(batch['height'])
+                
+                if torch.is_tensor(batch['width']):
+                    width = batch['width'].item()
+                elif isinstance(batch['width'], (list, tuple)):
+                    width = int(batch['width'][0])
+                else:
+                    width = int(batch['width'])
                 # TODO: UV padding
                 pad_img = uv_padding(img.squeeze(0), texture_map_outputs['mask_map'].squeeze(0).squeeze(0),
                                      iterations=2)
                 render_out = render_batched_meshes(self.ctx, mesh, pad_img, mvp_mtx, height, width, background_color)
                 # render_out = render_batched_meshes(self.ctx, mesh, img, mvp_mtx, height, width, background_color)
+                
+                # Handle dynamic number of views - arrange horizontally if not a perfect square
+                B, V, H, W, C = render_out.shape
+                if V == 16:
+                    # 4x4 grid
+                    img_rearranged = rearrange(render_out, "B (V1 V2) H W C -> (B V1 H) (V2 W) C", V1=4)
+                else:
+                    # Horizontal arrangement for non-square grids
+                    img_rearranged = rearrange(render_out, "B V H W C -> (B H) (V W) C")
+                
                 img_format = [{
                     "type": "rgb",
-                    "img": rearrange(render_out, "B (V1 V2) H W C -> (B V1 H) (V2 W) C", V1=4),
+                    "img": img_rearranged,
                     "kwargs": {"data_format": "HWC"},
                 }]
 

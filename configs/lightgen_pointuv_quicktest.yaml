@@ -1,0 +1,108 @@
+name: lightgen
+tag: "pointuv_quicktest"
+exp_root_dir: "outputs"
+seed: 42
+
+# Data configuration - Full annotated dataset
+data_cls: spuv.data.lightgen_uv.LightGenDataModule
+data:
+  data_root: "../data/baked_uv_local"
+  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  scene_list: ""
+  eval_scene_list: ""
+  repeat: 1
+  vertex_transformation: false
+  cond_views: 1
+  sup_views: 4
+  camera_strategy: "strategy_1"
+  eval_cond_views: 1
+  eval_sup_views: 4
+  eval_camera_strategy: "strategy_test_1_to_4_90deg"
+
+  # Train/Val/Test splits from annotated emissive data (filtered for local dataset)
+  train_indices: "../data/baked_uv_local/data_splits_filtered.json"
+  val_indices: "../data/baked_uv_local/data_splits_filtered.json"
+  test_indices: "../data/baked_uv_local/data_splits_filtered.json"
+
+  height: 512
+  width: 512
+  uv_height: 512
+  uv_width: 512
+  batch_size: 2  # Smaller batch for PointUVNet (more memory intensive)
+  num_workers: 4
+
+# System configuration
+system_cls: spuv.systems.lightgen_system.LightGenSystem
+system:
+  # Model backbone - using LightGenPointUVNet (3D-aware)
+  backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
+  backbone:
+    in_channels: 10  # noisy_emission(3) + position(3) + baked_texture(3) + baked_weights(1)
+    out_channels: 3  # RGB emission map
+    block_out_channels: [64, 128, 256, 512]
+    hidden_size: 1024
+    skip_input: true
+    skip_type: "adaptive"
+  
+  # Loss configuration
+  loss:
+    diffusion_loss_dict:
+      lambda_mse: 1.0
+      lambda_l1: 100.0
+    use_min_snr_weight: false
+  
+  # Noise scheduler
+  noise_scheduler:
+    _target_: diffusers.DDPMScheduler
+    num_train_timesteps: 1000
+    beta_start: 0.00085
+    beta_end: 0.012
+    beta_schedule: "scaled_linear"
+    clip_sample: false
+    prediction_type: "epsilon"
+  
+  # Image tokenizer for CLIP embeddings
+  image_tokenizer:
+    _target_: spuv.models.tokenizers.image_tokenizers.MultiviewImageTokenizer
+    pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
+  
+  # Training settings
+  condition_drop_rate: 0.1  # Classifier-free guidance
+  data_normalization: false
+  
+  # Optimizer
+  optimizer:
+    name: AdamW
+    args:
+      lr: 1e-4
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+  
+  # Learning rate scheduler
+  scheduler:
+    name: CosineAnnealingLR
+    interval: step
+    args:
+      T_max: 100000
+      eta_min: 1e-6
+
+# Trainer configuration - QUICK TEST (5 epochs)
+trainer:
+  max_epochs: 5  # Quick test: only 5 epochs
+  check_val_every_n_epoch: 1  # Validate every epoch
+  num_sanity_val_steps: 2
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  num_nodes: 1
+  log_every_n_steps: 50
+  # Note: accelerator and devices are set by launch.py based on --gpu flag
+
+# Checkpoint configuration
+checkpoint:
+  save_last: true
+  save_top_k: 3
+  every_n_epochs: 1
+  monitor: "val/psnr"
+  mode: "max"
+  save_on_train_epoch_end: false  # Wait for validation before saving
+

@@ -1,0 +1,118 @@
+name: lightgen
+tag: "overfit_10_samples"
+exp_root_dir: "outputs"
+seed: 42
+
+# Data configuration - Overfit on 10 samples
+data_cls: spuv.data.lightgen_uv.LightGenDataModule
+data:
+  data_root: "../data/baked_uv_local"
+  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  scene_list: ""
+  eval_scene_list: ""
+  repeat: 1
+  vertex_transformation: false
+  cond_views: 1
+  sup_views: 4
+  camera_strategy: "strategy_1"
+  eval_cond_views: 1
+  eval_sup_views: 4
+  eval_camera_strategy: "strategy_test_1_to_4_90deg"
+
+  # Overfit on 10 samples - same for train/val/test
+  # Picking indices 0-9 from the filtered dataset
+  train_indices: [0, 10]      # 10 samples for training
+  val_indices: [0, 10]        # Same 10 samples for validation (to verify overfitting)
+  test_indices: [0, 10]       # Same 10 samples for testing
+
+  height: 512
+  width: 512
+  uv_height: 512
+  uv_width: 512
+  batch_size: 2  # Small batch for overfitting
+  num_workers: 0  # 0 workers for easier debugging
+
+# System configuration
+system_cls: spuv.systems.lightgen_system.LightGenSystem
+system:
+  condition_drop_rate: 0.0  # Disable dropout for overfitting
+  rescale_betas_zero_snr: true
+  use_ema: false  # Disable EMA for faster overfitting
+  ema_decay: 0.9999
+  render_background_color: [0.0, 0.0, 0.0]
+  train_regression: false
+  recon_warm_up_steps: 0
+  prediction_type: "v_prediction"
+  check_train_every_n_steps: 10  # Check frequently
+  val_with_ema: false
+
+  test_cfg_scale: 2.0  # Classifier-free guidance scale
+  test_num_steps: 50   # Number of denoising steps
+  guidance_rescale: 0.0
+  guidance_interval: [0.0, 1.0]
+
+  # Data augmentation - DISABLED for overfitting
+  cond_rgb_perturb: false
+
+  # Image tokenizer for CLIP embeddings
+  image_tokenizer_cls: spuv.models.tokenizers.clip.ClipTokenizer
+  image_tokenizer:
+    pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
+
+  # Backbone - SimpleUVUNet (lightweight for fast overfitting)
+  backbone_cls: spuv.models.sparse_networks.simpleuv_unet.SimpleUVUNet
+  backbone:
+    in_channels: 14  # noisy(3) + position(3) + materials(8)
+    out_channels: 3
+    model_channels: 128  # Reduced for faster training
+    num_res_blocks: 2
+    attention_resolutions: [4, 8]
+    dropout: 0.0  # No dropout for overfitting
+    channel_mult: [1, 2, 4, 8]
+    conv_resample: true
+    num_heads: 8
+    use_spatial_transformer: true
+    transformer_depth: 1
+    context_dim: 768
+
+  # Loss configuration - aggressive for overfitting
+  loss:
+    diffusion_loss_dict:
+      lambda_mse: 1.0
+      lambda_l1: 1.0  # Increased L1 for sharper overfitting
+    render_loss_dict:
+      lambda_render_lpips: 0.0
+    use_min_snr_weight: false
+
+# Training configuration - optimized for overfitting
+trainer:
+  max_steps: 5000  # Enough steps to overfit on 10 samples
+  log_every_n_steps: 1
+  val_check_interval: 100  # Validate frequently to see overfitting progress
+  gradient_clip_val: 1.0
+  precision: "bf16-mixed"  # Use mixed precision for speed
+  
+checkpoint:
+  save_top_k: 3
+  every_n_train_steps: 200
+  monitor: "train/loss"  # Monitor training loss for overfitting
+
+# Optimizer - aggressive for overfitting
+optimizer:
+  name: AdamW
+  args:
+    lr: 5.0e-4  # Higher learning rate for faster overfitting
+    weight_decay: 0.0  # No weight decay for overfitting
+    betas: [0.9, 0.999]
+
+# Scheduler - constant LR for overfitting
+scheduler:
+  name: constant
+  interval: step
+  frequency: 1
+
+
+
+
+
+

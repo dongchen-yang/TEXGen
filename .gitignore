@@ -7,5 +7,21 @@ __pycache__/
 # Ingore .sh
 *.sh
 
+# Model outputs and checkpoints
 output*/
+outputs/
 assets/checkpoints/*.ckpt
+*.ckpt
+
+# Training logs and artifacts
+wandb/
+*.log
+inference_outputs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python version management
+.python-version

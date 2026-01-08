@@ -1,0 +1,120 @@
+name: lightgen
+tag: "full_training"
+exp_root_dir: "outputs"
+seed: 42
+
+# Data configuration - Full annotated dataset
+data_cls: spuv.data.lightgen_uv.LightGenDataModule
+data:
+  data_root: "../data/baked_uv_local"
+  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  scene_list: ""
+  eval_scene_list: ""
+  repeat: 1
+  vertex_transformation: false
+  cond_views: 1
+  sup_views: 4
+  camera_strategy: "strategy_1"
+  eval_cond_views: 1
+  eval_sup_views: 4
+  eval_camera_strategy: "strategy_test_1_to_4_90deg"
+
+  # Train/Val/Test splits from annotated emissive data
+  # Total: 1154 samples (923 train / 115 val / 116 test)
+  # These indices correspond to positions in the filtered parquet dataframe (0-1153)
+  # Using the same JSON file for all splits - the dataset will extract the appropriate split
+  train_indices: "../data/baked_uv_local/data_splits_filtered.json"
+  val_indices: "../data/baked_uv_local/data_splits_filtered.json"
+  test_indices: "../data/baked_uv_local/data_splits_filtered.json"
+
+  height: 512
+  width: 512
+  uv_height: 512
+  uv_width: 512
+  batch_size: 2  # Increased from 1 for efficiency
+  num_workers: 4  # Use multiple workers for data loading
+
+# System configuration
+system_cls: spuv.systems.lightgen_system.LightGenSystem
+system:
+  condition_drop_rate: 0.1  # Enable dropout for regularization
+  rescale_betas_zero_snr: true
+  use_ema: true  # Enable EMA
+  ema_decay: 0.9999
+  val_with_ema: true  # Validate with EMA weights
+  render_background_color: [0.0, 0.0, 0.0]
+  train_regression: false
+  recon_warm_up_steps: 0
+  prediction_type: "v_prediction"  # or "epsilon" or "sample"
+  check_train_every_n_steps: 100  # Check training outputs
+  test_save_json: false
+
+  test_cfg_scale: 2.0  # Classifier-free guidance scale
+  test_num_steps: 50   # Number of denoising steps
+  guidance_rescale: 0.0
+  guidance_interval: [0.0, 1.0]
+
+  # Data augmentation (disabled for UV space)
+  cond_rgb_perturb: false
+
+  # Image tokenizer (for conditioning on material/albedo)
+  image_tokenizer_cls: spuv.models.tokenizers.clip.ClipTokenizer
+  image_tokenizer:
+    pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
+
+  # Backbone network - Simple U-Net for UV space
+  backbone_cls: spuv.models.simple_uv_unet.SimpleUVUNet
+  backbone:
+    in_channels: 11  # position(3) + normal(3) + albedo(3) + metal(1) + rough(1)
+    out_channels: 3  # emission RGB
+    base_channels: 64  # Base number of channels
+    time_emb_dim: 256  # Time embedding dimension
+
+  # Loss configuration
+  loss:
+    diffusion_loss_dict:
+      lambda_mse: 1.0
+      lambda_l1: 0.5
+    render_loss_dict:
+      lambda_render_lpips: 0.0
+      lambda_render_mse: 0.0
+      lambda_render_l1: 0.0
+    use_min_snr_weight: false
+    use_vgg: false
+
+  # Optimizer
+  optimizer:
+    name: AdamW
+    args:
+      lr: 1e-4  # Learning rate
+      betas: [0.9, 0.999]
+      weight_decay: 0.01  # Weight decay for regularization
+
+  # Learning rate scheduler
+  scheduler:
+    name: CosineAnnealingLR
+    interval: step
+    args:
+      T_max: 100000
+      eta_min: 1e-6
+
+# Trainer configuration
+trainer:
+  max_epochs: 100  # Train for 100 epochs
+  check_val_every_n_epoch: 1  # Validate after every epoch
+  num_sanity_val_steps: 2  # Run 2 validation steps before training
+  precision: bf16-mixed  # Use mixed precision for efficiency
+  gradient_clip_val: 1.0
+  num_nodes: 1
+  log_every_n_steps: 50
+  # Note: accelerator and devices are set by launch.py based on --gpu flag
+
+# Checkpoint configuration
+checkpoint:
+  save_last: true  # Save last checkpoint
+  save_top_k: 5  # Save top 5 checkpoints
+  every_n_epochs: 1  # Save checkpoint every epoch
+  monitor: "val/psnr"  # Monitor validation PSNR
+  mode: "max"  # Higher PSNR is better
+  save_on_train_epoch_end: false  # Wait for validation before saving
+

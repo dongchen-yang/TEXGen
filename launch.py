@@ -4,6 +4,10 @@ import logging
 import os
 import sys
 
+# Disable HuggingFace Hub's chat template check for older models
+os.environ['HF_HUB_DISABLE_EXPERIMENTAL_WARNING'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
 
 class ColoredFilter(logging.Filter):
     """
@@ -157,7 +161,11 @@ def main(args, extras) -> None:
             TensorBoardLogger(cfg.trial_dir, name="tb_logs"),
         ]
         if args.wandb:
-            wandb_logger = WandbLogger(project="SPUV", name=f"{cfg.name}-{cfg.tag}")
+            wandb_logger = WandbLogger(
+                project="LightGen",  # Project name on wandb
+                name=f"{cfg.name}-{cfg.tag}",  # Run name
+                config=dict(cfg),  # Log config
+            )
             system._wandb_logger = wandb_logger
             loggers += [wandb_logger]
         rank_zero_only(
