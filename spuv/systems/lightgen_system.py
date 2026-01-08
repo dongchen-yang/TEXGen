@@ -240,13 +240,13 @@ class LightGenSystem(TEXGenDiffusion):
         # Compute loss
         loss_dict = self.get_diffusion_loss(out, diffusion_data)
         
-        # Log losses
+        # Log losses (aggregated per epoch for cleaner visualization with epoch as x-axis)
         for key, value in loss_dict.items():
-            self.log(f'train/{key}', value, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            self.log(f'train/{key}', value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         # Total loss
         total_loss = sum(loss_dict.values())
-        self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train/loss', total_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         # Store outputs for visualization
         outputs = {
@@ -387,10 +387,10 @@ class LightGenSystem(TEXGenDiffusion):
                 
                 loss_dict['emissive_mse'] = emissive_mse * lambda_emissive
                 
-                # Log statistics
-                if self.training and self.global_step % 100 == 0:
+                # Log statistics (aggregated per epoch)
+                if self.training:
                     emissive_ratio = emissive_mask.sum() / (mask.sum() + 1e-8)
-                    self.log('train/emissive_ratio', emissive_ratio, prog_bar=False)
+                    self.log('train/emissive_ratio', emissive_ratio, on_step=False, on_epoch=True, prog_bar=False)
         
         return loss_dict
     

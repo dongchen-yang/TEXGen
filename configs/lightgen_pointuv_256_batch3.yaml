@@ -97,8 +97,6 @@ system:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_emissive: 2.0  # Strong supervision on emissive regions
-      emissive_threshold: 0.1  # Threshold for detecting emissive regions
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0

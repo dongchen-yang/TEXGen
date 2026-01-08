@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256res_batch4"
+tag: "pointuv_256res_batch2_emissive"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -29,7 +29,7 @@ data:
   width: 256
   uv_height: 256
   uv_width: 256
-  batch_size: 4  # 4x larger batch size (memory scales ~O(n^2) with resolution)
+  batch_size: 2  # 4x larger batch size (memory scales ~O(n^2) with resolution)
   num_workers: 4
 
 # System configuration
@@ -92,11 +92,13 @@ system:
     
     use_uv_head: true
 
-  # Loss configuration
+  # Loss configuration with emissive region loss
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
+      lambda_emissive: 2.0  # NEW: Strong supervision on emissive regions (where emission > 0)
+      emissive_threshold: 0.001  # NEW: Threshold for detecting emissive regions (in [0,1] range)
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0
@@ -122,7 +124,7 @@ system:
 
 # Trainer configuration
 trainer:
-  max_epochs: 100
+  max_epochs: 10
   check_val_every_n_epoch: 1  # Validate every epoch
   num_sanity_val_steps: 2
   precision: bf16-mixed

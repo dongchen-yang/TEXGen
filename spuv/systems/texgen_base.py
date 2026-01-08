@@ -403,9 +403,9 @@ class TEXGenDiffusion(BaseSystem):
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)
         
-        # Log metrics
-        self.log('val/mse', mse, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val/psnr', psnr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        # Log metrics (aggregated per epoch for cleaner visualization with epoch as x-axis)
+        self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         # Save UV maps (flipped for visualization)
         for key, img in [("pred_x0", pred_img), ("gt_x0", gt_img)]:
@@ -423,13 +423,27 @@ class TEXGenDiffusion(BaseSystem):
                 step=self.true_global_step,
             )
         
-        # Save side-by-side comparison image (pred | gt | mask)
+        # Get input albedo from batch
+        albedo_map = batch.get("albedo_map", None)
+        if albedo_map is not None:
+            # Albedo is already in [0, 1] range, apply mask
+            albedo_img = albedo_map * mask_map
+        
+        # Save side-by-side comparison image (input_albedo | pred | gt | mask)
         flip_pred = torch.flip(pred_img, dims=[2])
         flip_gt = torch.flip(gt_img, dims=[2])
         flip_mask = torch.flip(mask_map.repeat(1, 3, 1, 1), dims=[2])  # Repeat mask to 3 channels
+        
+        # Build comparison list
+        comparison_images = []
+        if albedo_map is not None:
+            flip_albedo = torch.flip(albedo_img, dims=[2])
+            comparison_images.append(flip_albedo)
+        comparison_images.extend([flip_pred, flip_gt, flip_mask])
+        
         comparison_img_format = [{
             "type": "rgb",
-            "img": rearrange(torch.cat([flip_pred, flip_gt, flip_mask], dim=-1), "B C H W -> (B H) W C"),
+            "img": rearrange(torch.cat(comparison_images, dim=-1), "B C H W -> (B H) W C"),
             "kwargs": {"data_format": "HWC"},
         }]
         
