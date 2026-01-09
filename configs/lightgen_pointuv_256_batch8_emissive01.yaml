@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256res_batch4_emissive"
+tag: "pointuv_256res_batch4_emissive01"
 exp_root_dir: "outputs"
 seed: 42
 
