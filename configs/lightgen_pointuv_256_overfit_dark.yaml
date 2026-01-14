@@ -113,7 +113,7 @@ system:
 # Trainer configuration - Many epochs for overfitting
 trainer:
   max_epochs: 100  # Many epochs to overfit on 1 sample
-  check_val_every_n_epoch: 5  # Validate less frequently
+  check_val_every_n_epoch: 1  # Validate every epoch
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0

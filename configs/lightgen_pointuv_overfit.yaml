@@ -114,20 +114,20 @@ system:
 # Trainer configuration
 trainer:
   max_epochs: 200
-  check_val_every_n_epoch: 10000  # Disable validation
-  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 1  # Validate every epoch
+  num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
   log_every_n_steps: 10
-  limit_val_batches: 0  # Disable validation
   # Note: accelerator and devices are set by launch.py based on --gpu flag
 
 # Checkpoint configuration
 checkpoint:
   save_last: true
-  save_top_k: 1
-  every_n_epochs: 20
-  monitor: "train/loss"
-  mode: "min"
+  save_top_k: 3
+  every_n_epochs: 10
+  monitor: "val/psnr"
+  mode: "max"
+  save_on_train_epoch_end: false  # Wait for validation before saving
 
