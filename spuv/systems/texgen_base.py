@@ -419,7 +419,7 @@ class TEXGenDiffusion(BaseSystem):
             self.save_image_grid(
                 f"it{self.true_global_step}-test/{save_str}_{key}.png",
                 img_format,
-                name=f"test_step_output_{self.global_rank}_{batch_idx}",
+                name=f"test/{key}",
                 step=self.true_global_step,
             )
         
@@ -447,6 +447,22 @@ class TEXGenDiffusion(BaseSystem):
         flip_gt_emission_mask = torch.flip(gt_emission_mask, dims=[2])
         flip_pred_emission_mask = torch.flip(pred_emission_mask, dims=[2])
         
+        # Save individual emission masks
+        for key, mask_img in [("gt_emission_mask", gt_emission_mask), ("pred_emission_mask", pred_emission_mask)]:
+            flip_mask_img = torch.flip(mask_img, dims=[2])
+            mask_format = [{
+                "type": "rgb",
+                "img": rearrange(flip_mask_img, "B C H W -> (B H) W C"),
+                "kwargs": {"data_format": "HWC"},
+            }]
+            
+            self.save_image_grid(
+                f"it{self.true_global_step}-test/{save_str}_{key}.png",
+                mask_format,
+                name=f"test/{key}",
+                step=self.true_global_step,
+            )
+        
         # Build comparison list
         comparison_images = []
         if albedo_map is not None:
@@ -463,7 +479,7 @@ class TEXGenDiffusion(BaseSystem):
         self.save_image_grid(
             f"it{self.true_global_step}-test/{save_str}_comparison.png",
             comparison_img_format,
-            name=f"test_step_comparison_{self.global_rank}_{batch_idx}",
+            name="test/comparison",
             step=self.true_global_step,
         )
 

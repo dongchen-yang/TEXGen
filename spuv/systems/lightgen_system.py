@@ -421,14 +421,12 @@ class LightGenSystem(TEXGenDiffusion):
             
             # Only compute loss if there are dark regions
             if dark_mask.sum() > 0:
-                # Target for dark regions: -1 in normalized space (which is 0 brightness)
-                # In flow matching, target = x0 - noise, so dark target = -1 - noise
-                dark_target = -torch.ones_like(sample_images) - noise
-                
-                # MSE loss on dark regions to enforce blackness
+                # Use the same velocity target as the main loss, but weighted on dark regions
+                # This respects the denoising process while emphasizing dark areas
+                # The standard target already encodes the correct denoising direction
                 dark_mse = F.mse_loss(
                     out * dark_mask,
-                    dark_target * dark_mask,
+                    target * dark_mask,  # Use standard target, not forcing to pure black
                     reduction='sum'
                 ) / (dark_mask.sum() + 1e-8)
                 
