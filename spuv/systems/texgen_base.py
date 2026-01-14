@@ -429,17 +429,30 @@ class TEXGenDiffusion(BaseSystem):
             # Albedo is already in [0, 1] range, apply mask
             albedo_img = albedo_map * mask_map
         
-        # Save side-by-side comparison image (input_albedo | pred | gt | mask)
+        # Get emissive threshold from config
+        emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+        
+        # Create GT emission mask (where any RGB channel > threshold)
+        gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+        gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
+        
+        # Create predicted emission mask (where any RGB channel > threshold)
+        pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+        pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
+        
+        # Save side-by-side comparison image (input_albedo | pred | gt | mask | gt_emission_mask | pred_emission_mask)
         flip_pred = torch.flip(pred_img, dims=[2])
         flip_gt = torch.flip(gt_img, dims=[2])
         flip_mask = torch.flip(mask_map.repeat(1, 3, 1, 1), dims=[2])  # Repeat mask to 3 channels
+        flip_gt_emission_mask = torch.flip(gt_emission_mask, dims=[2])
+        flip_pred_emission_mask = torch.flip(pred_emission_mask, dims=[2])
         
         # Build comparison list
         comparison_images = []
         if albedo_map is not None:
             flip_albedo = torch.flip(albedo_img, dims=[2])
             comparison_images.append(flip_albedo)
-        comparison_images.extend([flip_pred, flip_gt, flip_mask])
+        comparison_images.extend([flip_pred, flip_gt, flip_mask, flip_gt_emission_mask, flip_pred_emission_mask])
         
         comparison_img_format = [{
             "type": "rgb",

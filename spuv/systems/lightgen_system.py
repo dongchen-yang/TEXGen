@@ -303,6 +303,17 @@ class LightGenSystem(TEXGenDiffusion):
                     else:
                         thumbnail_img = thumbnail[0]  # [H, W, 3]
                 
+                # Create emission masks using the configured threshold
+                emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+                
+                # GT emission mask
+                gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+                gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
+                
+                # Predicted emission mask
+                pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+                pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
+                
                 # Convert to wandb format
                 import wandb
                 images = []
@@ -319,6 +330,8 @@ class LightGenSystem(TEXGenDiffusion):
                 images.extend([
                     wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Emission"),
                     wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Ground Truth"),
+                    wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
+                    wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
                 ])
                 
                 self._wandb_logger.log_image(
@@ -370,7 +383,7 @@ class LightGenSystem(TEXGenDiffusion):
             gt_emission = (sample_images + 1.0) / 2.0
             
             # Create emissive mask: where any RGB channel > threshold
-            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.1)
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.0)
             emissive_mask = (gt_emission.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
             
             # Combine with UV mask
@@ -391,6 +404,40 @@ class LightGenSystem(TEXGenDiffusion):
                 if self.training:
                     emissive_ratio = emissive_mask.sum() / (mask.sum() + 1e-8)
                     self.log('train/emissive_ratio', emissive_ratio, on_step=False, on_epoch=True, prog_bar=False)
+        
+        # Dark region loss - constrain non-emissive regions to be black
+        lambda_dark = self.cfg.loss.diffusion_loss_dict.get('lambda_dark_region', 0.0)
+        if lambda_dark > 0:
+            # Ground truth emission in normalized space [-1, 1]
+            # Convert to [0, 1] for thresholding
+            gt_emission = (sample_images + 1.0) / 2.0
+            
+            # Create dark region mask: where all RGB channels <= threshold
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.1)
+            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float()
+            
+            # Combine with UV mask (only consider valid UV regions)
+            dark_mask = dark_mask * mask
+            
+            # Only compute loss if there are dark regions
+            if dark_mask.sum() > 0:
+                # Target for dark regions: -1 in normalized space (which is 0 brightness)
+                # In flow matching, target = x0 - noise, so dark target = -1 - noise
+                dark_target = -torch.ones_like(sample_images) - noise
+                
+                # MSE loss on dark regions to enforce blackness
+                dark_mse = F.mse_loss(
+                    out * dark_mask,
+                    dark_target * dark_mask,
+                    reduction='sum'
+                ) / (dark_mask.sum() + 1e-8)
+                
+                loss_dict['dark_region_mse'] = dark_mse * lambda_dark
+                
+                # Log statistics (aggregated per epoch)
+                if self.training:
+                    dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
+                    self.log('train/dark_ratio', dark_ratio, on_step=False, on_epoch=True, prog_bar=False)
         
         return loss_dict
     

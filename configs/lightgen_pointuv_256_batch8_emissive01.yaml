@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256res_batch4_emissive01"
+tag: "pointuv_256res_batch4_emissive01_00"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -98,6 +98,7 @@ system:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 0.1  # NEW: Strong supervision on emissive regions
+      lambda_dark_region: 0.0  # NEW: Constrain non-emissive regions to be completely dark
       emissive_threshold: 0.001  # NEW: Threshold for detecting emissive regions
     render_loss_dict:
       lambda_render_lpips: 0.0
