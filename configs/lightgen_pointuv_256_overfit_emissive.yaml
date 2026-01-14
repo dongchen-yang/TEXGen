@@ -84,7 +84,7 @@ system:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_emissive: 2.0  # STRONG emissive loss for overfitting test
+      lambda_emissive: 2.0  # STRONG emissive loss
       lambda_dark_region: 0.0  # NO dark loss - testing emissive loss only
       emissive_threshold: 0.001
     render_loss_dict:

@@ -79,13 +79,13 @@ system:
     skip_type: "adaptive"
     use_uv_head: true
 
-  # Loss configuration with BOTH emissive + dark region losses (balanced)
+  # Loss configuration with BOTH emissive + dark region losses
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_emissive: 2.0  # STRONG emissive loss (bright regions are small)
-      lambda_dark_region: 0.5  # MODERATE dark loss (dark regions are large)
+      lambda_emissive: 2.0  # Strong supervision for bright regions
+      lambda_dark_region: 0.5  # Moderate supervision for dark regions
       emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0

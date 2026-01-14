@@ -98,7 +98,7 @@ system:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 0.0  # NO emissive loss
-      lambda_dark_region: 0.5  # DARK LOSS: 0.5 - Reasonable weight (accounts for dark region prevalence)
+      lambda_dark_region: 0.15  # DARK LOSS: 0.15 - Light weight
       emissive_threshold: 0.001  # Threshold for detecting dark regions
     render_loss_dict:
       lambda_render_lpips: 0.0

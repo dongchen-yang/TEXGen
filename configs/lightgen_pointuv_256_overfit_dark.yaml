@@ -85,7 +85,7 @@ system:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 0.0  # NO emissive loss - testing dark loss only
-      lambda_dark_region: 0.5  # MODERATE dark loss (lower due to class imbalance)
+      lambda_dark_region: 0.5  # Dark loss weight (conservative)
       emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0

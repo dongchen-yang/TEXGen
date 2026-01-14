@@ -92,13 +92,13 @@ system:
     
     use_uv_head: true
 
-  # Loss configuration with emissive region loss AND dark region loss (balanced)
+  # Loss configuration with BOTH regional losses
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_emissive: 1.0  # Strong supervision on emissive regions (small area)
-      lambda_dark_region: 0.25  # DARK LOSS: 0.25 - Moderate weight (large area)
+      lambda_emissive: 1.0  # Strong supervision on emissive regions
+      lambda_dark_region: 0.25  # DARK LOSS: 0.25 - Conservative weight
       emissive_threshold: 0.001  # Threshold for detecting emissive regions
     render_loss_dict:
       lambda_render_lpips: 0.0
