@@ -405,45 +405,59 @@ class LightGenSystem(TEXGenDiffusion):
                     emissive_ratio = emissive_mask.sum() / (mask.sum() + 1e-8)
                     self.log('train/emissive_ratio', emissive_ratio, on_step=False, on_epoch=True, prog_bar=False)
         
-        # Dark region loss - constrain non-emissive regions to be black
-        lambda_dark = self.cfg.loss.diffusion_loss_dict.get('lambda_dark_region', 0.0)
-        if lambda_dark > 0:
+        # Emission mask prediction loss - predict which regions should be emissive
+        lambda_mask = self.cfg.loss.diffusion_loss_dict.get('lambda_emission_mask', 0.0)
+        if lambda_mask > 0:
             # Ground truth emission in normalized space [-1, 1]
             # Convert to [0, 1] for thresholding
             gt_emission = (sample_images + 1.0) / 2.0
-            
-            # Create dark region mask: where all RGB channels <= threshold
             emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
-            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float()
             
-            # Combine with UV mask (only consider valid UV regions)
-            dark_mask = dark_mask * mask
+            # GT emission mask: binary mask where emission is > threshold
+            gt_mask = (gt_emission.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
             
-            # Only compute loss if there are dark regions
-            if dark_mask.sum() > 0:
-                # IMPORTANT: In flow matching, we predict velocity v = x0 - noise
-                # To constrain dark regions, we need to penalize the velocity that would 
-                # lead to non-dark outputs. The target for dark regions should push
-                # the velocity to denoise towards pure black (-1 in [-1,1] space).
+            # Predicted x0 from velocity: x0 = noisy_input + velocity * timestep
+            # In flow matching: v = x0 - noise, so x0 = v + noise
+            noisy_images = diffusion_data['noisy_images']
+            pred_x0 = out + noise
+            
+            # Predicted emission in [0, 1]
+            pred_emission = (pred_x0 + 1.0) / 2.0
+            
+            # Predicted emission mask (probability)
+            pred_mask_logits = pred_emission.max(dim=1, keepdim=True)[0]
+            
+            # Binary cross-entropy loss for mask prediction
+            # Only compute on valid UV regions
+            valid_mask = mask.squeeze(1) if mask.dim() == 4 else mask
+            gt_mask_valid = gt_mask.squeeze(1) if gt_mask.dim() == 4 else gt_mask
+            pred_mask_logits_valid = pred_mask_logits.squeeze(1) if pred_mask_logits.dim() == 4 else pred_mask_logits
+            
+            # Clamp predictions to avoid numerical issues
+            pred_mask_probs = torch.clamp(pred_mask_logits_valid, 1e-7, 1.0 - 1e-7)
+            
+            # BCE loss on valid pixels only
+            bce_loss = F.binary_cross_entropy(
+                pred_mask_probs * valid_mask,
+                gt_mask_valid * valid_mask,
+                reduction='none'
+            )
+            mask_loss = (bce_loss * valid_mask).sum() / (valid_mask.sum() + 1e-8)
+            
+            loss_dict['emission_mask_bce'] = mask_loss * lambda_mask
+            
+            # Log statistics
+            if self.training:
+                # IoU metric for mask prediction
+                pred_mask_binary = (pred_mask_probs > 0.5).float() * valid_mask
+                gt_mask_binary = gt_mask_valid * valid_mask
+                intersection = (pred_mask_binary * gt_mask_binary).sum()
+                union = ((pred_mask_binary + gt_mask_binary) > 0).float().sum()
+                iou = intersection / (union + 1e-8)
                 
-                # Create a "dark target": velocity that leads to pure black
-                # In dark regions, x0 should be -1 (pure black in [-1,1])
-                # So velocity should be: v = x0 - noise = -1 - noise
-                dark_target = -torch.ones_like(sample_images) - noise
-                
-                # MSE loss on velocity in dark regions, pushing towards black output
-                dark_mse = F.mse_loss(
-                    out * dark_mask,
-                    dark_target * dark_mask,  # Force velocity towards pure black
-                    reduction='sum'
-                ) / (dark_mask.sum() + 1e-8)
-                
-                loss_dict['dark_region_mse'] = dark_mse * lambda_dark
-                
-                # Log statistics (aggregated per epoch)
-                if self.training:
-                    dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
-                    self.log('train/dark_ratio', dark_ratio, on_step=False, on_epoch=True, prog_bar=False)
+                self.log('train/mask_iou', iou, on_step=False, on_epoch=True, prog_bar=False)
+                self.log('train/mask_gt_ratio', gt_mask_binary.sum() / (valid_mask.sum() + 1e-8), 
+                        on_step=False, on_epoch=True, prog_bar=False)
         
         return loss_dict
     

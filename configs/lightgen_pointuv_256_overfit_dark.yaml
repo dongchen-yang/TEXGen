@@ -79,13 +79,13 @@ system:
     skip_type: "adaptive"
     use_uv_head: true
 
-  # Loss configuration with dark region loss for testing
+  # Loss configuration with emission mask prediction for testing
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_emissive: 0.0  # NO emissive loss - testing dark loss only
-      lambda_dark_region: 0.5  # Dark loss weight (conservative)
+      lambda_emissive: 0.0  # NO emissive loss
+      lambda_emission_mask: 1.0  # Predict emission mask directly (BCE loss)
       emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0
