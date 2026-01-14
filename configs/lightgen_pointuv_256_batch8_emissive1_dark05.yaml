@@ -98,7 +98,7 @@ system:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 1.0  # Strong supervision on emissive regions
-      lambda_dark_region: 0.5  # DARK LOSS: 0.5 - Mild constraint on non-emissive regions
+      lambda_dark_region: 0.5  # DARK LOSS: 0.5 - Balanced with emissive loss (recommended)
       emissive_threshold: 0.001  # Threshold for detecting emissive regions
     render_loss_dict:
       lambda_render_lpips: 0.0

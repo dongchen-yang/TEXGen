@@ -98,7 +98,7 @@ system:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 0.0  # NO emissive loss
-      lambda_dark_region: 2.0  # DARK LOSS: 2.0 - Strong constraint on non-emissive regions
+      lambda_dark_region: 2.0  # DARK LOSS: 2.0 - Very strong (likely to destroy bright regions)
       emissive_threshold: 0.001  # Threshold for detecting dark regions
     render_loss_dict:
       lambda_render_lpips: 0.0

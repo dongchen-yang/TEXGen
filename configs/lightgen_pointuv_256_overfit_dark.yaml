@@ -79,13 +79,13 @@ system:
     skip_type: "adaptive"
     use_uv_head: true
 
-  # Loss configuration with STRONG dark region loss for testing
+  # Loss configuration with dark region loss for testing
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
       lambda_emissive: 0.0  # NO emissive loss - testing dark loss only
-      lambda_dark_region: 2.0  # STRONG dark loss for overfitting test
+      lambda_dark_region: 0.5  # MODERATE dark loss (lower due to class imbalance)
       emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0

@@ -413,7 +413,7 @@ class LightGenSystem(TEXGenDiffusion):
             gt_emission = (sample_images + 1.0) / 2.0
             
             # Create dark region mask: where all RGB channels <= threshold
-            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.1)
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
             dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float()
             
             # Combine with UV mask (only consider valid UV regions)
