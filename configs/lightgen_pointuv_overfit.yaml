@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_overfit_test"
+tag: "pointuv_256_overfit_baseline"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -21,16 +21,16 @@ data:
 
   # Single sample for overfitting (using first sample from filtered dataset)
   # Using JSON file for reliable parsing
-  train_indices: "../data/baked_uv_local/overfit_split_single.json"
-  val_indices: "../data/baked_uv_local/overfit_split_single.json"
-  test_indices: "../data/baked_uv_local/overfit_split_single.json"
+  train_indices: "configs/data_splits_overfit_single.json"
+  val_indices: "configs/data_splits_overfit_single.json"
+  test_indices: "configs/data_splits_overfit_single.json"
 
-  height: 512
-  width: 512
-  uv_height: 512
-  uv_width: 512
+  height: 256
+  width: 256
+  uv_height: 256
+  uv_width: 256
   batch_size: 1
-  num_workers: 0
+  num_workers: 2
 
 # System configuration
 system_cls: spuv.systems.lightgen_system.LightGenSystem
@@ -73,7 +73,7 @@ system:
     
     block_type: ["uv", "point_uv", "uv_dit", "uv_dit"]
     voxel_size: [0.01, 0.02, 0.05, 0.05]
-    window_size: [0, 256, 256, 512]
+    window_size: [0, 128, 128, 256]
     num_heads: [4, 4, 8, 8]
     
     skip_input: true
@@ -85,6 +85,9 @@ system:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
+      lambda_emissive: 0.0  # Set to >0 to enable emissive region loss
+      lambda_dark_region: 0.0  # Set to >0 to enable dark region loss
+      emissive_threshold: 0.001  # Threshold for detecting emissive regions
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0
