@@ -308,8 +308,8 @@ class LightGenSystem(TEXGenDiffusion):
                 
                 # GT emission mask
                 gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-                gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
                 
+                gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
                 # Predicted emission mask
                 pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
                 pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
