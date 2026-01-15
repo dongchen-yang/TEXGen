@@ -192,6 +192,7 @@ class LightGenSystem(TEXGenDiffusion):
         
         # Check model output channels
         out_channels = self.cfg.backbone.out_channels
+        print(f"[DEBUG] LightGenSystem.prepare_diffusion_data called with out_channels={out_channels}")
         
         if out_channels == 1:
             # MASK-ONLY MODE: Convert GT emission to binary mask

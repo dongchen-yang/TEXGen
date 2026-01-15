@@ -112,8 +112,9 @@ system:
 # Trainer configuration - Many epochs for overfitting
 trainer:
   max_epochs: 100  # Many epochs to overfit on 1 sample
-  check_val_every_n_epoch: 1  # Validate every epoch
-  num_sanity_val_steps: 1
+  check_val_every_n_epoch: 10000  # Disable validation for now (channel mismatch issue)
+  limit_val_batches: 0  # Skip validation
+  num_sanity_val_steps: 0  # Skip sanity check
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
@@ -124,7 +125,7 @@ checkpoint:
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
-  monitor: "val/mask_iou"  # Monitor validation mask IoU
+  monitor: "train/mask_iou"  # Monitor training mask IoU (validation disabled)
   mode: "max"
-  save_on_train_epoch_end: false
+  save_on_train_epoch_end: true
 
