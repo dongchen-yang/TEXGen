@@ -62,7 +62,7 @@ system:
   # Backbone: LightGenPointUVNet - OUTPUT 1 CHANNEL (mask only)
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
-    in_channels: 10
+    in_channels: 8  # ← CHANGED: 1 (noisy mask) + 3 (position) + 3 (material) + 1 (mask) = 8
     out_channels: 1  # ← CHANGED: Only output emission mask (1 channel)
     
     num_layers: [1, 1, 1, 1, 1]
