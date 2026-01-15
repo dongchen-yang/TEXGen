@@ -407,8 +407,19 @@ class TEXGenDiffusion(BaseSystem):
         self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
+        # Check if mask-only mode (1 channel) or RGB mode (3 channels)
+        is_mask_only = (pred_img.shape[1] == 1)
+        
+        # For mask-only mode, repeat to 3 channels for visualization
+        if is_mask_only:
+            pred_img_vis = pred_img.repeat(1, 3, 1, 1)
+            gt_img_vis = gt_img.repeat(1, 3, 1, 1)
+        else:
+            pred_img_vis = pred_img
+            gt_img_vis = gt_img
+        
         # Save UV maps (flipped for visualization)
-        for key, img in [("pred_x0", pred_img), ("gt_x0", gt_img)]:
+        for key, img in [("pred_x0", pred_img_vis), ("gt_x0", gt_img_vis)]:
             flip_img = torch.flip(img, dims=[2])
             img_format = [{
                 "type": "rgb",
@@ -432,17 +443,23 @@ class TEXGenDiffusion(BaseSystem):
         # Get emissive threshold from config
         emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
         
-        # Create GT emission mask (where any RGB channel > threshold)
-        gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-        gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
+        if is_mask_only:
+            # MASK-ONLY MODE: pred_img is the mask itself (1 channel)
+            # Create binary masks for visualization
+            gt_emission_mask = (gt_img > 0.5).float().repeat(1, 3, 1, 1)
+            pred_emission_mask = (pred_img > 0.5).float().repeat(1, 3, 1, 1)
+        else:
+            # RGB MODE: Create GT emission mask (where any RGB channel > threshold)
+            gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+            gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
+            
+            # Create predicted emission mask (where any RGB channel > threshold)
+            pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+            pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
         
-        # Create predicted emission mask (where any RGB channel > threshold)
-        pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-        pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels for visualization
-        
-        # Save side-by-side comparison image (input_albedo | pred | gt | mask | gt_emission_mask | pred_emission_mask)
-        flip_pred = torch.flip(pred_img, dims=[2])
-        flip_gt = torch.flip(gt_img, dims=[2])
+        # Save side-by-side comparison image
+        flip_pred = torch.flip(pred_img_vis, dims=[2])
+        flip_gt = torch.flip(gt_img_vis, dims=[2])
         flip_mask = torch.flip(mask_map.repeat(1, 3, 1, 1), dims=[2])  # Repeat mask to 3 channels
         flip_gt_emission_mask = torch.flip(gt_emission_mask, dims=[2])
         flip_pred_emission_mask = torch.flip(pred_emission_mask, dims=[2])

@@ -1,9 +1,9 @@
 name: lightgen
-tag: "pointuv_256_overfit_mask"
+tag: "pointuv_256_overfit_maskonly"
 exp_root_dir: "outputs"
 seed: 42
 
-# Data configuration - OVERFIT on single object to test emission mask prediction
+# Data configuration - OVERFIT on single object - MASK ONLY prediction
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
   data_root: "../data/baked_uv_local"
@@ -59,11 +59,11 @@ system:
   image_tokenizer:
     pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
 
-  # Backbone: LightGenPointUVNet
+  # Backbone: LightGenPointUVNet - OUTPUT 1 CHANNEL (mask only)
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
     in_channels: 10
-    out_channels: 3
+    out_channels: 1  # ← CHANGED: Only output emission mask (1 channel)
     
     num_layers: [1, 1, 1, 1, 1]
     point_block_num: [1, 1, 2, 4, 6]
@@ -79,12 +79,12 @@ system:
     skip_type: "adaptive"
     use_uv_head: true
 
-  # Loss configuration - DIRECT mask prediction as primary task
+  # Loss configuration - ONLY mask prediction (no RGB emission)
   loss:
     diffusion_loss_dict:
-      lambda_mse: 0.5  # Reduced - mask is primary
-      lambda_l1: 0.25  # Reduced - mask is primary
-      lambda_emission_mask: 5.0  # VERY STRONG - mask is PRIMARY prediction target
+      lambda_mse: 0.0  # DISABLED - no RGB emission
+      lambda_l1: 0.0   # DISABLED - no RGB emission
+      lambda_emission_mask: 10.0  # ONLY mask loss
       emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0
@@ -124,7 +124,7 @@ checkpoint:
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
-  monitor: "val/psnr"
+  monitor: "train/mask_iou"  # Monitor mask IoU directly
   mode: "max"
   save_on_train_epoch_end: false
 

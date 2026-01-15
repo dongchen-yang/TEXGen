@@ -183,12 +183,28 @@ class LightGenSystem(TEXGenDiffusion):
         """
         Prepare diffusion data from batch.
         Uses Flow Matching from parent class (matches original TEXGen).
+        Supports two modes:
+        - out_channels=3: Predict RGB emission
+        - out_channels=1: Predict binary mask only
         """
         device = get_device()
         B = batch['gt_emission'].shape[0]
         
-        # Ground truth emission map (already normalized to [-1, 1])
-        sample_images = batch['gt_emission']  # [B, 3, H, W]
+        # Check model output channels
+        out_channels = self.cfg.backbone.out_channels
+        
+        if out_channels == 1:
+            # MASK-ONLY MODE: Convert GT emission to binary mask
+            gt_emission = batch['gt_emission']  # [B, 3, H, W] in [-1, 1]
+            gt_emission_01 = (gt_emission + 1.0) / 2.0  # Convert to [0, 1]
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+            
+            # Create binary mask: 1 where emission > threshold, -1 where <= threshold (for [-1, 1] space)
+            gt_mask_binary = (gt_emission_01.max(dim=1, keepdim=True)[0] > emissive_threshold).float()  # [B, 1, H, W] in [0, 1]
+            sample_images = gt_mask_binary * 2.0 - 1.0  # Convert to [-1, 1] for diffusion
+        else:
+            # RGB EMISSION MODE: Use GT emission directly
+            sample_images = batch['gt_emission']  # [B, 3, H, W] in [-1, 1]
         
         # Mask and position
         mask_map = batch['mask_map']  # [B, 1, H, W]
@@ -214,7 +230,7 @@ class LightGenSystem(TEXGenDiffusion):
         loss_weights = torch.ones_like(timesteps, device=device, dtype=self.dtype)
         
         diffusion_data = {
-            'sample_images': sample_images,
+            'sample_images': sample_images,  # Either [B, 3, H, W] RGB or [B, 1, H, W] mask
             'noisy_images': noisy_images,
             'mask_map': mask_map,
             'position_map': position_map,
@@ -274,6 +290,9 @@ class LightGenSystem(TEXGenDiffusion):
                     diffusion_data['noisy_images'][0:1]
                 )
                 
+                # Check if mask-only mode (1 channel) or RGB mode (3 channels)
+                is_mask_only = (pred_x0.shape[1] == 1)
+                
                 # Denormalize from [-1, 1] to [0, 1] for proper visualization
                 pred_img = (pred_x0 * 0.5 + 0.5) * diffusion_data['mask_map'][0:1]
                 gt_img = (diffusion_data['sample_images'][0:1] * 0.5 + 0.5) * diffusion_data['mask_map'][0:1]
@@ -306,14 +325,6 @@ class LightGenSystem(TEXGenDiffusion):
                 # Create emission masks using the configured threshold
                 emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
                 
-                # GT emission mask
-                gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-                
-                gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
-                # Predicted emission mask
-                pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-                pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
-                
                 # Convert to wandb format
                 import wandb
                 images = []
@@ -326,13 +337,38 @@ class LightGenSystem(TEXGenDiffusion):
                 if thumbnail_img is not None:
                     images.append(wandb.Image(thumbnail_img.cpu().detach().numpy(), caption="Input Rendering"))
                 
-                # Add prediction and ground truth
-                images.extend([
-                    wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Emission"),
-                    wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Ground Truth"),
-                    wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
-                    wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
-                ])
+                if is_mask_only:
+                    # MASK-ONLY MODE: Show binary masks
+                    # Repeat single channel to 3 channels for visualization
+                    pred_mask_vis = pred_img.repeat(1, 3, 1, 1)
+                    gt_mask_vis = gt_img.repeat(1, 3, 1, 1)
+                    
+                    # Threshold to binary for visualization
+                    pred_mask_binary = (pred_img > 0.5).float().repeat(1, 3, 1, 1)
+                    gt_mask_binary = (gt_img > 0.5).float().repeat(1, 3, 1, 1)
+                    
+                    images.extend([
+                        wandb.Image(pred_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Mask (continuous)"),
+                        wandb.Image(gt_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy(), caption="GT Mask (continuous)"),
+                        wandb.Image(pred_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Mask (binary, >0.5)"),
+                        wandb.Image(gt_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy(), caption="GT Mask (binary)"),
+                    ])
+                else:
+                    # RGB MODE: Show emission and masks
+                    # GT emission mask
+                    gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+                    gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
+                    
+                    # Predicted emission mask
+                    pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+                    pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
+                    
+                    images.extend([
+                        wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Emission"),
+                        wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Ground Truth"),
+                        wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
+                        wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
+                    ])
                 
                 self._wandb_logger.log_image(
                     key="train/predictions",
@@ -409,6 +445,81 @@ class LightGenSystem(TEXGenDiffusion):
                 if self.training:
                     dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
                     self.log('train/dark_ratio', dark_ratio, on_step=False, on_epoch=True, prog_bar=False)
+        
+        # Emission mask prediction loss
+        # Supports two modes:
+        # 1. out_channels=3: Derive mask from RGB max
+        # 2. out_channels=1: Direct mask prediction
+        lambda_mask = self.cfg.loss.diffusion_loss_dict.get('lambda_emission_mask', 0.0)
+        if lambda_mask > 0:
+            # Ground truth emission in normalized space [-1, 1]
+            # Convert to [0, 1] for thresholding
+            gt_emission = (sample_images + 1.0) / 2.0
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+            
+            # GT emission mask: binary mask where emission is > threshold
+            gt_mask_binary = (gt_emission.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
+            
+            # Predicted x0 from velocity: x0 = v + noise
+            pred_x0 = out + noise
+            
+            # Check if model outputs 1 channel (mask only) or 3 channels (RGB)
+            if out.shape[1] == 1:
+                # MODE: Direct mask prediction (1 channel output)
+                # Model directly outputs mask in [-1, 1], convert to [0, 1]
+                pred_mask_raw = (pred_x0 + 1.0) / 2.0  # [B, 1, H, W]
+            else:
+                # MODE: RGB emission prediction (3 channels), derive mask
+                pred_emission = (pred_x0 + 1.0) / 2.0  # [B, 3, H, W]
+                pred_mask_raw = pred_emission.max(dim=1, keepdim=True)[0]  # [B, 1, H, W]
+            
+            # Convert probabilities to logits: logit(p) = log(p / (1-p))
+            # Clamp to avoid log(0) or division by 0
+            pred_mask_clamped = torch.clamp(pred_mask_raw, 1e-7, 1.0 - 1e-7)
+            pred_mask_logits = torch.log(pred_mask_clamped / (1.0 - pred_mask_clamped))
+            
+            # Apply UV mask to only compute on valid regions
+            valid_mask = mask
+            
+            # BCE with logits loss (autocast-safe)
+            bce_loss = F.binary_cross_entropy_with_logits(
+                pred_mask_logits * valid_mask,
+                gt_mask_binary * valid_mask,
+                reduction='none'
+            )
+            mask_loss = (bce_loss * valid_mask).sum() / (valid_mask.sum() + 1e-8)
+            
+            loss_dict['emission_mask_bce'] = mask_loss * lambda_mask
+            
+            # If RGB mode, also enforce dark regions are zero
+            if out.shape[1] == 3:
+                pred_emission = (pred_x0 + 1.0) / 2.0
+                dark_mask = (1.0 - gt_mask_binary)  # Inverse of emissive mask
+                if dark_mask.sum() > 0:
+                    dark_rgb_target = torch.zeros_like(pred_emission)
+                    dark_rgb_loss = F.mse_loss(
+                        pred_emission * dark_mask,
+                        dark_rgb_target * dark_mask,
+                        reduction='sum'
+                    ) / (dark_mask.sum() + 1e-8)
+                    
+                    loss_dict['dark_rgb_mse'] = dark_rgb_loss * lambda_mask * 0.5
+            
+            # Log statistics (aggregated per epoch)
+            if self.training:
+                # IoU metric for mask prediction
+                pred_mask_probs = torch.sigmoid(pred_mask_logits)
+                pred_mask_binary = (pred_mask_probs > 0.5).float() * valid_mask
+                gt_mask_valid = gt_mask_binary * valid_mask
+                
+                intersection = (pred_mask_binary * gt_mask_valid).sum()
+                union = ((pred_mask_binary + gt_mask_valid) > 0).float().sum()
+                iou = intersection / (union + 1e-8)
+                
+                self.log('train/mask_iou', iou, on_step=False, on_epoch=True, prog_bar=True)
+                self.log('train/mask_gt_ratio', gt_mask_valid.sum() / (valid_mask.sum() + 1e-8), 
+                        on_step=False, on_epoch=True, prog_bar=False)
+        
         return loss_dict
     
     def get_batched_pred_x0(self, out, timesteps, noisy_input):
