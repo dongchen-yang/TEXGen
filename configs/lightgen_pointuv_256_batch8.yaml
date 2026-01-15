@@ -92,7 +92,7 @@ system:
     
     use_uv_head: true
 
-  # Loss configuration
+  # Loss configuration - Original TEXGen baseline (MSE + L1 only)
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
