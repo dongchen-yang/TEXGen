@@ -62,6 +62,7 @@ class PointUVNet(BaseModule):
 
         in_channels = self.cfg.in_channels
         out_channels = self.cfg.out_channels
+        print(f"[DEBUG] PointUVNet.configure: in_channels={in_channels}, out_channels={out_channels}")
         num_layers = self.cfg.num_layers
         block_out_channels = self.cfg.block_out_channels
         voxel_size = self.cfg.voxel_size
