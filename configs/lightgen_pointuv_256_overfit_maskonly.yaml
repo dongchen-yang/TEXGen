@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256_overfit_maskonly_v3"
+tag: "pointuv_256_overfit_maskonly_v4"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -124,7 +124,7 @@ checkpoint:
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
-  monitor: "val/mask_iou"  # Monitor validation mask IoU
+  monitor: "val/psnr"  # Monitor validation PSNR (mask IoU not logged in val)
   mode: "max"
   save_on_train_epoch_end: false
 
