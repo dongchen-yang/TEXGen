@@ -375,6 +375,40 @@ class LightGenSystem(TEXGenDiffusion):
         if self.cfg.loss.diffusion_loss_dict.get('lambda_l1', 0.0) > 0:
             loss_dict['l1'] = l1_loss * self.cfg.loss.diffusion_loss_dict['lambda_l1']
         
+        # Dark region loss - constrain non-emissive regions to be pure black (0 in [0,1] or -1 in [-1,1])
+        lambda_dark = self.cfg.loss.diffusion_loss_dict.get('lambda_dark_region', 0.0)
+        if lambda_dark > 0:
+            # Ground truth emission in normalized space [-1, 1]
+            # Convert to [0, 1] for thresholding
+            gt_emission = (sample_images + 1.0) / 2.0
+            
+            # Create dark region mask: where all RGB channels <= threshold
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float()
+            
+            # Combine with UV mask (only consider valid UV regions)
+            dark_mask = dark_mask * mask
+            
+            # Only compute loss if there are dark regions
+            if dark_mask.sum() > 0:
+                # In flow matching: v = x0 - noise
+                # For dark regions, we want x0 = -1 (pure black in [-1,1])
+                # So the velocity target should be: v = -1 - noise
+                # This ensures that when denoised: x0 = v + noise = (-1 - noise) + noise = -1
+                dark_target = -torch.ones_like(sample_images) - noise
+                
+                # MSE loss on velocity in dark regions, pushing towards pure black output
+                dark_mse = F.mse_loss(
+                    out * dark_mask,
+                    dark_target * dark_mask,
+                    reduction='sum'
+                ) / (dark_mask.sum() + 1e-8)
+                
+                loss_dict['dark_region_mse'] = dark_mse * lambda_dark
+                # Log statistics (aggregated per epoch)
+                if self.training:
+                    dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
+                    self.log('train/dark_ratio', dark_ratio, on_step=False, on_epoch=True, prog_bar=False)
         return loss_dict
     
     def get_batched_pred_x0(self, out, timesteps, noisy_input):

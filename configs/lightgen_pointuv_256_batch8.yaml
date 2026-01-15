@@ -92,11 +92,13 @@ system:
     
     use_uv_head: true
 
-  # Loss configuration - Original TEXGen baseline (MSE + L1 only)
+  # Loss configuration
   loss:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
+      lambda_dark_region: 0.0  # Set to >0 to enable dark region loss (e.g., 0.1-0.5)
+      emissive_threshold: 0.001  # Threshold for detecting dark regions
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0
