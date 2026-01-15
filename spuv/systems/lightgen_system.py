@@ -344,6 +344,10 @@ class LightGenSystem(TEXGenDiffusion):
                     pred_mask_vis = pred_img.repeat(1, 3, 1, 1)
                     gt_mask_vis = gt_img.repeat(1, 3, 1, 1)
                     
+                    print(f"[DEBUG TRAIN VIZ] pred_img shape: {pred_img.shape}, range: [{pred_img.min():.3f}, {pred_img.max():.3f}]")
+                    print(f"[DEBUG TRAIN VIZ] pred_mask_vis shape: {pred_mask_vis.shape}, range: [{pred_mask_vis.min():.3f}, {pred_mask_vis.max():.3f}]")
+                    print(f"[DEBUG TRAIN VIZ] After permute shape: {pred_mask_vis[0].cpu().permute(1, 2, 0).shape}")
+                    
                     # Threshold to binary for visualization
                     pred_mask_binary = (pred_img > 0.5).float().repeat(1, 3, 1, 1)
                     gt_mask_binary = (gt_img > 0.5).float().repeat(1, 3, 1, 1)

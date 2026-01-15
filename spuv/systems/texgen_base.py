@@ -412,8 +412,10 @@ class TEXGenDiffusion(BaseSystem):
         
         # For mask-only mode, repeat to 3 channels for visualization
         if is_mask_only:
+            print(f"[DEBUG TEST VIZ] pred_img shape: {pred_img.shape}, range: [{pred_img.min():.3f}, {pred_img.max():.3f}]")
             pred_img_vis = pred_img.repeat(1, 3, 1, 1)
             gt_img_vis = gt_img.repeat(1, 3, 1, 1)
+            print(f"[DEBUG TEST VIZ] pred_img_vis shape: {pred_img_vis.shape}, range: [{pred_img_vis.min():.3f}, {pred_img_vis.max():.3f}]")
         else:
             pred_img_vis = pred_img
             gt_img_vis = gt_img
