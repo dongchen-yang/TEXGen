@@ -75,7 +75,7 @@ system:
     window_size: [0, 128, 128, 256, 256]
     num_heads: [4, 4, 16, 16, 16]
     
-    skip_input: true
+    skip_input: false  # ← DISABLED: Skip connection causes channel mismatch for 1-channel output
     skip_type: "adaptive"
     use_uv_head: true
 
