@@ -470,7 +470,9 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         test_num_steps = self.cfg.test_num_steps
 
         B, C, H, W = diffusion_data["mask_map"].shape
-        noise = torch.randn((B, 3, H, W), device=device, dtype=self.dtype)
+        # Use configured out_channels (3 for RGB, 1 for mask-only)
+        out_channels = self.cfg.backbone.out_channels
+        noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise
 
         t_span=torch.linspace(0, 1, test_num_steps, device=device, dtype=self.dtype)

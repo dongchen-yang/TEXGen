@@ -574,7 +574,9 @@ class TEXGenDiffusion(BaseSystem):
         self.test_scheduler.set_timesteps(test_num_steps, device=device)
         timesteps = self.test_scheduler.timesteps
 
-        noise = torch.randn((B, 3, H, W), device=device, dtype=self.dtype)
+        # Use configured out_channels (3 for RGB, 1 for mask-only)
+        out_channels = self.cfg.backbone.out_channels
+        noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise
         #breakpoint()
         mid_result = []

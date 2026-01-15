@@ -137,7 +137,7 @@ class PointUVNet(BaseModule):
         self.condition_embedder = ConditionEmbedding(clip_condition=True, double_condition=True)
         if self.cfg.skip_input and self.cfg.skip_type == "adaptive":
             self.ada_skip_scale = nn.Linear(1024, 2, bias=True)
-            self.ada_skip_map = nn.Conv2d(in_channels+10, 2 * out_channels, kernel_size=1, stride=1, padding=0)
+            self.ada_skip_map = nn.Conv2d(in_channels+self.cfg.in_channels, 2 * out_channels, kernel_size=1, stride=1, padding=0)
         self.output_conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
 
         self.weight_initialization()
