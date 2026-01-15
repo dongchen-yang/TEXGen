@@ -124,7 +124,7 @@ checkpoint:
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
-  monitor: "train/mask_iou"  # Monitor mask IoU directly
+  monitor: "val/mask_iou"  # Monitor validation mask IoU
   mode: "max"
   save_on_train_epoch_end: false
 
