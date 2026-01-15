@@ -344,10 +344,6 @@ class LightGenSystem(TEXGenDiffusion):
                     pred_mask_vis = pred_img.repeat(1, 3, 1, 1)
                     gt_mask_vis = gt_img.repeat(1, 3, 1, 1)
                     
-                    print(f"[DEBUG TRAIN VIZ] pred_img shape: {pred_img.shape}, range: [{pred_img.min():.3f}, {pred_img.max():.3f}]")
-                    print(f"[DEBUG TRAIN VIZ] pred_mask_vis shape: {pred_mask_vis.shape}, range: [{pred_mask_vis.min():.3f}, {pred_mask_vis.max():.3f}]")
-                    print(f"[DEBUG TRAIN VIZ] After permute shape: {pred_mask_vis[0].cpu().permute(1, 2, 0).shape}")
-                    
                     # Threshold to binary for visualization
                     pred_mask_binary = (pred_img > 0.5).float().repeat(1, 3, 1, 1)
                     gt_mask_binary = (gt_img > 0.5).float().repeat(1, 3, 1, 1)
@@ -394,6 +390,10 @@ class LightGenSystem(TEXGenDiffusion):
         """
         Compute diffusion loss with Flow Matching (inherited from parent).
         Target: velocity field v = x0 - noise
+        
+        Supports EXCLUSIVE supervision modes:
+        1. If lambda_emission_mask > 0: Supervise bright/dark regions separately
+        2. Otherwise: Standard MSE+L1 over all regions (baseline TEXGen)
         """
         sample_images = diffusion_data['sample_images']
         noise = diffusion_data['noise']
@@ -402,33 +402,48 @@ class LightGenSystem(TEXGenDiffusion):
         # Flow Matching velocity target (same as original TEXGen)
         target = sample_images - noise
         
-        # MSE loss
-        mse_loss = F.mse_loss(out * mask, target * mask, reduction='mean')
-        
-        # L1 loss  
-        l1_loss = F.l1_loss(out * mask, target * mask, reduction='mean')
-        
         loss_dict = {}
         
-        if self.cfg.loss.diffusion_loss_dict.get('lambda_mse', 0.0) > 0:
-            loss_dict['mse'] = mse_loss * self.cfg.loss.diffusion_loss_dict['lambda_mse']
+        # Check if we're using emission mask loss (which requires exclusive supervision)
+        lambda_mask = self.cfg.loss.diffusion_loss_dict.get('lambda_emission_mask', 0.0)
+        lambda_dark = self.cfg.loss.diffusion_loss_dict.get('lambda_dark_region', 0.0)
         
-        if self.cfg.loss.diffusion_loss_dict.get('lambda_l1', 0.0) > 0:
-            loss_dict['l1'] = l1_loss * self.cfg.loss.diffusion_loss_dict['lambda_l1']
+        if lambda_mask > 0 or lambda_dark > 0:
+            # EXCLUSIVE SUPERVISION MODE: Separate bright and dark regions
+            # Compute emissive/dark masks
+            gt_emission = (sample_images + 1.0) / 2.0  # Convert to [0, 1]
+            emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+            
+            bright_mask = (gt_emission.max(dim=1, keepdim=True)[0] > emissive_threshold).float() * mask
+            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float() * mask
+            
+            # Base losses ONLY on bright regions
+            if bright_mask.sum() > 0:
+                bright_mse = F.mse_loss(out * bright_mask, target * bright_mask, reduction='sum') / (bright_mask.sum() + 1e-8)
+                bright_l1 = F.l1_loss(out * bright_mask, target * bright_mask, reduction='sum') / (bright_mask.sum() + 1e-8)
+                
+                if self.cfg.loss.diffusion_loss_dict.get('lambda_mse', 0.0) > 0:
+                    loss_dict['mse_bright'] = bright_mse * self.cfg.loss.diffusion_loss_dict['lambda_mse']
+                
+                if self.cfg.loss.diffusion_loss_dict.get('lambda_l1', 0.0) > 0:
+                    loss_dict['l1_bright'] = bright_l1 * self.cfg.loss.diffusion_loss_dict['lambda_l1']
+        else:
+            # STANDARD MODE: MSE+L1 over all regions (original TEXGen)
+            mse_loss = F.mse_loss(out * mask, target * mask, reduction='mean')
+            l1_loss = F.l1_loss(out * mask, target * mask, reduction='mean')
+            
+            if self.cfg.loss.diffusion_loss_dict.get('lambda_mse', 0.0) > 0:
+                loss_dict['mse'] = mse_loss * self.cfg.loss.diffusion_loss_dict['lambda_mse']
+            
+            if self.cfg.loss.diffusion_loss_dict.get('lambda_l1', 0.0) > 0:
+                loss_dict['l1'] = l1_loss * self.cfg.loss.diffusion_loss_dict['lambda_l1']
         
         # Dark region loss - constrain non-emissive regions to be pure black (0 in [0,1] or -1 in [-1,1])
-        lambda_dark = self.cfg.loss.diffusion_loss_dict.get('lambda_dark_region', 0.0)
         if lambda_dark > 0:
-            # Ground truth emission in normalized space [-1, 1]
-            # Convert to [0, 1] for thresholding
+            # Compute dark mask (will reuse from above if already computed in exclusive mode)
             gt_emission = (sample_images + 1.0) / 2.0
-            
-            # Create dark region mask: where all RGB channels <= threshold
             emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
-            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float()
-            
-            # Combine with UV mask (only consider valid UV regions)
-            dark_mask = dark_mask * mask
+            dark_mask = (gt_emission.max(dim=1, keepdim=True)[0] <= emissive_threshold).float() * mask
             
             # Only compute loss if there are dark regions
             if dark_mask.sum() > 0:

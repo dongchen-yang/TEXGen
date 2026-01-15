@@ -46,7 +46,7 @@ system:
   check_train_every_n_steps: 10  # Check frequently
   val_with_ema: false
 
-  test_cfg_scale: 2.0  # Classifier-free guidance scale
+  test_cfg_scale: 0.0  # No CFG for perfect overfitting (2.0 adds noise!)  # Classifier-free guidance scale
   test_num_steps: 50   # Number of denoising steps
   guidance_rescale: 0.0
   guidance_interval: [0.0, 1.0]
