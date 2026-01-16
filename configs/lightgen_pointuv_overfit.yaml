@@ -112,8 +112,8 @@ system:
 
 # Trainer configuration
 trainer:
-  max_epochs: 2000  # Long training to test if baseline can overfit
-  check_val_every_n_epoch: 50  # Validate every 50 epochs
+  max_epochs: 5000  # Very long training to test convergence limit
+  check_val_every_n_epoch: 100  # Validate every 100 epochs
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
