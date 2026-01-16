@@ -47,7 +47,7 @@ system:
   check_train_every_n_steps: 10
   test_save_json: false
 
-  test_cfg_scale: 0.0  # No CFG for perfect overfitting (2.0 adds noise!)
+  test_cfg_scale: 2.0  # Original CFG setting
   test_num_steps: 50
   guidance_rescale: 0.0
   guidance_interval: [0.0, 1.0]
@@ -76,7 +76,7 @@ system:
     window_size: [0, 128, 128, 256]
     num_heads: [4, 4, 8, 8]
     
-    skip_input: false  # NO skip for emission - albedo texture causes noise!
+    skip_input: true  # Original skip connection setting
     skip_type: "adaptive"
     use_uv_head: true
 
@@ -94,11 +94,11 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer - higher LR for faster overfitting
+  # Optimizer - original baseline LR
   optimizer:
     name: AdamW
     args:
-      lr: 1e-3  # High LR for fast overfitting on single sample
+      lr: 5e-4  # Original LR
       betas: [0.9, 0.999]
       weight_decay: 0.0
 
@@ -112,8 +112,8 @@ system:
 
 # Trainer configuration
 trainer:
-  max_epochs: 1000  # More epochs for diffusion mode overfitting
-  check_val_every_n_epoch: 10  # Validate every 10 epochs to speed up
+  max_epochs: 2000  # Long training to test if baseline can overfit
+  check_val_every_n_epoch: 50  # Validate every 50 epochs
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0

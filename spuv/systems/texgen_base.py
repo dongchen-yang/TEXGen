@@ -576,13 +576,7 @@ class TEXGenDiffusion(BaseSystem):
 
         # Use configured out_channels (3 for RGB, 1 for mask-only)
         out_channels = self.cfg.backbone.out_channels
-        
-        # Use fixed seed for deterministic validation (important for overfitting tests)
-        if not self.training:
-            generator = torch.Generator(device=device).manual_seed(42)
-            noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype, generator=generator)
-        else:
-            noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
+        noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise
         #breakpoint()
         mid_result = []
