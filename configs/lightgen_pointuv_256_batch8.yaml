@@ -119,13 +119,13 @@ system:
     name: CosineAnnealingLR
     interval: step
     args:
-      T_max: 100000
+      T_max: 500000  # Adjusted for 5000 epochs (~625k steps total)
       eta_min: 1e-6
 
 # Trainer configuration
 trainer:
-  max_epochs: 100
-  check_val_every_n_epoch: 1  # Validate every epoch
+  max_epochs: 5000  # Long training for better convergence
+  check_val_every_n_epoch: 100  # Validate every 100 epochs (faster training)
   num_sanity_val_steps: 2
   precision: bf16-mixed
   gradient_clip_val: 1.0
