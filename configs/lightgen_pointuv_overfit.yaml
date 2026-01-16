@@ -94,11 +94,11 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer - higher LR for faster overfitting
+  # Optimizer - moderate LR for stable overfitting
   optimizer:
     name: AdamW
     args:
-      lr: 5e-4
+      lr: 1e-4  # Lower LR for stability (5e-4 caused loss spikes)
       betas: [0.9, 0.999]
       weight_decay: 0.0
 
