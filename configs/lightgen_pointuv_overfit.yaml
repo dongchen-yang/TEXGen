@@ -41,7 +41,7 @@ system:
   ema_decay: 0.9999
   val_with_ema: false
   render_background_color: [0.0, 0.0, 0.0]
-  train_regression: false
+  train_regression: true  # Use regression (direct prediction) for perfect overfitting
   recon_warm_up_steps: 0
   prediction_type: "v_prediction"
   check_train_every_n_steps: 10
@@ -94,11 +94,11 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer - moderate LR for stable overfitting
+  # Optimizer - higher LR for faster overfitting
   optimizer:
     name: AdamW
     args:
-      lr: 1e-4  # Lower LR for stability (5e-4 caused loss spikes)
+      lr: 1e-3  # High LR for fast overfitting on single sample
       betas: [0.9, 0.999]
       weight_decay: 0.0
 
@@ -112,8 +112,8 @@ system:
 
 # Trainer configuration
 trainer:
-  max_epochs: 200
-  check_val_every_n_epoch: 1  # Validate every epoch
+  max_epochs: 1000  # More epochs for diffusion mode overfitting
+  check_val_every_n_epoch: 10  # Validate every 10 epochs to speed up
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
