@@ -41,13 +41,13 @@ system:
   ema_decay: 0.9999
   val_with_ema: false
   render_background_color: [0.0, 0.0, 0.0]
-  train_regression: true  # Use regression (direct prediction) for perfect overfitting
+  train_regression: false
   recon_warm_up_steps: 0
   prediction_type: "v_prediction"
   check_train_every_n_steps: 10
   test_save_json: false
 
-  test_cfg_scale: 2.0  # Original CFG setting
+  test_cfg_scale: 2.0
   test_num_steps: 50
   guidance_rescale: 0.0
   guidance_interval: [0.0, 1.0]
@@ -76,7 +76,7 @@ system:
     window_size: [0, 128, 128, 256]
     num_heads: [4, 4, 8, 8]
     
-    skip_input: true  # Original skip connection setting
+    skip_input: true
     skip_type: "adaptive"
     use_uv_head: true
 

@@ -34,7 +34,6 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
     def prepare_diffusion_data(self, batch, noisy_images=None):
         device = get_device()
-        print(f"[DEBUG] TEXGenDiffusion.prepare_diffusion_data called (parent class)")
         # Extract integer values from batch dimensions
         uv_channel = int(batch["uv_channel"][0]) if isinstance(batch["uv_channel"], (list, tuple)) else int(batch["uv_channel"])
         uv_height = int(batch["uv_height"][0]) if isinstance(batch["uv_height"], (list, tuple)) else int(batch["uv_height"])
@@ -473,8 +472,6 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         B, C, H, W = diffusion_data["mask_map"].shape
         # Use configured out_channels (3 for RGB, 1 for mask-only)
         out_channels = self.cfg.backbone.out_channels
-        print(f"[DEBUG] test_pipeline: out_channels={out_channels}, creating noise with shape ({B}, {out_channels}, {H}, {W})")
-        print(f"[DEBUG] test_pipeline: diffusion_data['noisy_images'] initial shape: {diffusion_data['noisy_images'].shape if 'noisy_images' in diffusion_data else 'N/A'}")
         noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise
 

@@ -113,7 +113,6 @@ class LightGenPointUVNet(PointUVNet):
 
         # Concatenate inputs: [noisy_emission, position, material, mask]
         # This matches the original PointUVNet input format
-        print(f"[DEBUG] LightGenPointUVNet input channels: x_dense={x_dense.shape[1]}, position={position_map.shape[1]}, baked_texture={baked_texture.shape[1]}, mask={baked_weights.shape[1]}, total={x_dense.shape[1] + position_map.shape[1] + baked_texture.shape[1] + baked_weights.shape[1]}")
         x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
         x_dense = self.input_conv(x_concat) * mask_map
         
