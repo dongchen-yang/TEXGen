@@ -76,7 +76,7 @@ system:
     window_size: [0, 128, 128, 256]
     num_heads: [4, 4, 8, 8]
     
-    skip_input: true
+    skip_input: false  # NO skip for emission - albedo texture causes noise!
     skip_type: "adaptive"
     use_uv_head: true
 
