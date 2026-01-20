@@ -53,7 +53,7 @@ def reset_ema_weights(state_dict):
 class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     @dataclass
     class Config:
-        loss: BaseLossConfig = BaseLossConfig()
+        loss: BaseLossConfig = field(default_factory=BaseLossConfig)
         optimizer: dict = field(default_factory=dict)
         scheduler: Optional[dict] = None
         weights: Optional[str] = None

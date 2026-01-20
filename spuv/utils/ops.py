@@ -6,7 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
-from torch.cuda.amp import custom_bwd, custom_fwd
+try:
+    # PyTorch 2.0+ - use new API
+    from torch.amp import custom_bwd as _custom_bwd, custom_fwd as _custom_fwd
+    custom_fwd = lambda **kwargs: _custom_fwd(**kwargs, device_type='cuda')
+    custom_bwd = lambda **kwargs: _custom_bwd(**kwargs, device_type='cuda') if kwargs else _custom_bwd(device_type='cuda')
+except ImportError:
+    # PyTorch < 2.0 - use old API
+    from torch.cuda.amp import custom_bwd, custom_fwd
 
 import spuv
 from .typing import *
@@ -47,7 +54,7 @@ class _TruncExp(Function):  # pylint: disable=abstract-method
         return torch.exp(x)
 
     @staticmethod
-    @custom_bwd
+    @custom_bwd()
     def backward(ctx, g):  # pylint: disable=arguments-differ
         x = ctx.saved_tensors[0]
         return g * torch.exp(torch.clamp(x, max=15))
