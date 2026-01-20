@@ -53,7 +53,7 @@ class LossConfig(BaseLossConfig):
 class TEXGenDiffusion(BaseSystem):
     @dataclass
     class Config(BaseSystem.Config):
-        loss: LossConfig = LossConfig()
+        loss: LossConfig = field(default_factory=LossConfig)
 
         backbone_cls: str = ""
         backbone: dict = field(default_factory=dict)
