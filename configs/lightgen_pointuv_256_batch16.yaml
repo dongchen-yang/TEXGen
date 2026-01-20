@@ -30,7 +30,7 @@ data:
   uv_height: 256
   uv_width: 256
   batch_size: 16  # Large batch size for 2 GPUs (8 per GPU)
-  num_workers: 16  # More workers for larger batch size
+  num_workers: 12  # More workers for larger batch size
 
 # System configuration
 system_cls: spuv.systems.lightgen_system.LightGenSystem
