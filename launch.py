@@ -124,9 +124,12 @@ def main(args, extras) -> None:
 
     callbacks = []
     if args.train:
+        # Use custom checkpoint dirpath if specified, otherwise default to trial_dir/ckpts
+        ckpt_dirpath = cfg.checkpoint.get("dirpath", os.path.join(cfg.trial_dir, "ckpts"))
+        ckpt_config = {k: v for k, v in cfg.checkpoint.items() if k != "dirpath"}
         callbacks += [
             ModelCheckpoint(
-                dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint
+                dirpath=ckpt_dirpath, **ckpt_config
             ),
             LearningRateMonitor(logging_interval="step"),
             # CodeSnapshotCallback(

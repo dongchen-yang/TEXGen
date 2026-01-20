@@ -136,6 +136,7 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
+  dirpath: "/scratch/dya78/lightgen/TEXGen/output/"
   save_last: true
   save_top_k: 5
   every_n_epochs: 1
