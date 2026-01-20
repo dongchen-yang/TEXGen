@@ -256,13 +256,13 @@ class LightGenSystem(TEXGenDiffusion):
         # Compute loss
         loss_dict = self.get_diffusion_loss(out, diffusion_data)
         
-        # Log losses (aggregated per epoch for cleaner visualization with epoch as x-axis)
+        # Log losses (both per-step and per-epoch for smooth curves)
         for key, value in loss_dict.items():
-            self.log(f'train/{key}', value, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+            self.log(f'train/{key}', value, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         
         # Total loss
         total_loss = sum(loss_dict.values())
-        self.log('train/loss', total_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         
         # Store outputs for visualization
         outputs = {
@@ -463,7 +463,7 @@ class LightGenSystem(TEXGenDiffusion):
                 # Log statistics (aggregated per epoch)
                 if self.training:
                     dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
-                    self.log('train/dark_ratio', dark_ratio, on_step=False, on_epoch=True, prog_bar=False)
+                    self.log('train/dark_ratio', dark_ratio, on_step=True, on_epoch=True, prog_bar=False)
         
         # Emission mask prediction loss
         # Supports two modes:
@@ -535,9 +535,9 @@ class LightGenSystem(TEXGenDiffusion):
                 union = ((pred_mask_binary + gt_mask_valid) > 0).float().sum()
                 iou = intersection / (union + 1e-8)
                 
-                self.log('train/mask_iou', iou, on_step=False, on_epoch=True, prog_bar=True)
+                self.log('train/mask_iou', iou, on_step=True, on_epoch=True, prog_bar=True)
                 self.log('train/mask_gt_ratio', gt_mask_valid.sum() / (valid_mask.sum() + 1e-8), 
-                        on_step=False, on_epoch=True, prog_bar=False)
+                        on_step=True, on_epoch=True, prog_bar=False)
         
         return loss_dict
     

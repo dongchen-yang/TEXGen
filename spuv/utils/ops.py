@@ -6,14 +6,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
+
+# Handle PyTorch AMP API changes
+import inspect
 try:
     # PyTorch 2.0+ - use new API
-    from torch.amp import custom_bwd as _custom_bwd, custom_fwd as _custom_fwd
-    custom_fwd = lambda **kwargs: _custom_fwd(**kwargs, device_type='cuda')
-    custom_bwd = lambda **kwargs: _custom_bwd(**kwargs, device_type='cuda') if kwargs else _custom_bwd(device_type='cuda')
+    from torch.amp import custom_bwd as _custom_bwd_orig, custom_fwd as _custom_fwd_orig
+    
+    # Check if the new API supports device_type parameter
+    _sig = inspect.signature(_custom_fwd_orig)
+    _SUPPORTS_DEVICE_TYPE = 'device_type' in _sig.parameters
 except ImportError:
     # PyTorch < 2.0 - use old API
-    from torch.cuda.amp import custom_bwd, custom_fwd
+    from torch.cuda.amp import custom_bwd as _custom_bwd_orig, custom_fwd as _custom_fwd_orig
+    _SUPPORTS_DEVICE_TYPE = False
+
+# Create wrappers
+def custom_fwd(**kwargs):
+    if _SUPPORTS_DEVICE_TYPE:
+        kwargs.setdefault('device_type', 'cuda')
+    return _custom_fwd_orig(**kwargs)
+
+def custom_bwd(func=None):
+    """Wrapper for custom_bwd that works with both @custom_bwd and @custom_bwd()"""
+    def decorator(f):
+        if _SUPPORTS_DEVICE_TYPE:
+            return _custom_bwd_orig(f, device_type='cuda')
+        else:
+            return _custom_bwd_orig(f)
+    
+    # Handle @custom_bwd without parentheses
+    if func is not None:
+        return decorator(func)
+    # Handle @custom_bwd() with parentheses
+    else:
+        return decorator
 
 import spuv
 from .typing import *
