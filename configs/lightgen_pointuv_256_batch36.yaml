@@ -30,7 +30,7 @@ data:
   uv_height: 256
   uv_width: 256
   batch_size: 36
-  eval_batch_size: 8  # Smaller than train due to 50-step denoising in validation
+  eval_batch_size: 1  # Must be 1 - test_step saves individual images by scene_id
   num_workers: 8  # 8 workers is typically sufficient
 
 # System configuration
