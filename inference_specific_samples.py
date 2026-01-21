@@ -2,6 +2,11 @@
 """
 Inference script for specific sample IDs using a trained checkpoint.
 Generates input, ground truth, and predicted emission maps.
+
+This script matches the validation process from training:
+- Uses EMA weights if enabled in config
+- Disables autocast during inference
+- Respects data_normalization setting from config
 """
 
 import os
@@ -122,8 +127,18 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n5. Output directory: {output_dir}")
     
+    # Check config settings
+    use_ema = cfg.system.get('use_ema', True)
+    val_with_ema = cfg.system.get('val_with_ema', True)
+    data_normalization = cfg.system.get('data_normalization', True)
+    
+    print(f"\n6. Config settings:")
+    print(f"   - use_ema: {use_ema}")
+    print(f"   - val_with_ema: {val_with_ema}")
+    print(f"   - data_normalization: {data_normalization}")
+    
     # Run inference for each sample
-    print("\n6. Running inference...")
+    print("\n7. Running inference...")
     
     for sample_id, idx in sample_indices.items():
         print(f"\n   Processing: {sample_id} (index {idx})")
@@ -150,14 +165,18 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             else:
                 batch[key] = [value]
         
-        # Run inference
+        # Run inference - matching validation process exactly
         with torch.no_grad():
-            # Prepare diffusion data
-            diffusion_data = model.prepare_diffusion_data(batch)
-            condition_info = model.prepare_condition_info(batch)
-            
-            # Run test pipeline
-            texture_map_outputs = model.test_pipeline(batch)
+            # Disable autocast (matching validation)
+            with torch.cuda.amp.autocast(enabled=False):
+                # Use EMA weights if enabled (matching validation)
+                if use_ema and val_with_ema:
+                    print(f"      Using EMA weights for inference")
+                    with model.ema_scope("Inference with ema weights"):
+                        texture_map_outputs = model.test_pipeline(batch)
+                else:
+                    print(f"      Using regular weights for inference")
+                    texture_map_outputs = model.test_pipeline(batch)
             
             # Extract results
             pred_emission = texture_map_outputs["pred_x0"][0]  # [3, H, W]
@@ -167,9 +186,13 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             # Get input (albedo map)
             albedo_map = batch["albedo_map"][0]  # [3, H, W]
             
-            # Denormalize from [-1, 1] to [0, 1]
-            pred_emission = (pred_emission * 0.5 + 0.5).clamp(0, 1)
-            gt_emission = (gt_emission * 0.5 + 0.5).clamp(0, 1)
+            # Denormalize based on config (matching validation)
+            if data_normalization:
+                pred_emission = (pred_emission * 0.5 + 0.5).clamp(0, 1)
+                gt_emission = (gt_emission * 0.5 + 0.5).clamp(0, 1)
+            else:
+                pred_emission = pred_emission.clamp(0, 1)
+                gt_emission = gt_emission.clamp(0, 1)
             # albedo is already in [0, 1] range
             
             # Apply mask
@@ -233,11 +256,12 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
     print("\n" + "=" * 80)
     print("✓ Inference Complete!")
     print(f"Results saved to: {output_dir}")
+    print(f"Settings: EMA={use_ema and val_with_ema}, data_normalization={data_normalization}")
     print("=" * 80)
 
 
 if __name__ == "__main__":
-    checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/outputs/lightgen/pointuv_256res_batch8@20260106-165422/pointuv_256res_batch8@20260106-165422/ckpts/epoch=57-step=6728.ckpt"
+    checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/outputs/pointuv_256res_batch8@20260115-235332/ckpts/last.ckpt"
     
     sample_ids = [
         "c85c7a1dbb724e9ea1d90abd6445fad4",

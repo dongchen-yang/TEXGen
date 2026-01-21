@@ -70,11 +70,9 @@ class LightGenSystem(TEXGenDiffusion):
         B, C, H, W = material_cond.shape
         rgb_cond = material_cond.permute(0, 2, 3, 1).unsqueeze(1)  # [B, 1, H, W, 8]
         
-        # Create dummy prompt (not used but expected by tokenizer)
-        if isinstance(batch['scene_id'], list):
-            prompt = batch['scene_id']  # Use scene IDs as prompts
-        else:
-            prompt = ["emission generation"] * rgb_cond.shape[0]
+        # Use fixed prompt for LightGen (dataset doesn't have text prompts)
+        # Using consistent prompt rather than scene_id hashes which carry no semantic meaning
+        prompt = ["emission generation"] * B
         
         # Generate text embeddings
         text_embeddings = self.image_tokenizer.process_text(prompt).to(dtype=self.dtype)
