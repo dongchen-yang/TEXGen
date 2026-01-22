@@ -67,7 +67,7 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
         print(f"   Warning: Config not found at {config_path}, using default")
         cfg = OmegaConf.load("configs/lightgen_pointuv_256_batch2.yaml")
     
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     print(f"   ✓ Checkpoint loaded (epoch {checkpoint.get('epoch', 'unknown')})")
     
     # Load data module
@@ -80,6 +80,7 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
     cfg_data.parquet_file = "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
     cfg_data.data_root = "/localhome/dya78/code/lightgen/data/baked_uv"
     print(f"   Using full dataset: {cfg_data.parquet_file}")
+    print(f"   Thumbnails will be loaded from: data/baked_uv_local/thumbnails/")
     
     # Don't apply train/val/test filters
     cfg_data.test_indices = None
@@ -139,6 +140,8 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
     
     # Run inference for each sample
     print("\n7. Running inference...")
+    
+    all_results = []  # Store results for overall visualization
     
     for sample_id, idx in sample_indices.items():
         print(f"\n   Processing: {sample_id} (index {idx})")
@@ -206,6 +209,20 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             albedo_img = albedo_map.cpu().permute(1, 2, 0).numpy()
             mask_img = mask_map.cpu().numpy()
             
+            # Get thumbnail - load directly from baked_uv_local since data_root is different
+            thumbnail_img = None
+            thumbnail_path = f"/localhome/dya78/code/lightgen/data/baked_uv_local/thumbnails/{sample_id}.png"
+            if os.path.exists(thumbnail_path):
+                thumb_pil = Image.open(thumbnail_path).convert('RGB')
+                thumbnail_img = np.array(thumb_pil).astype(np.float32) / 255.0  # [H, W, 3]
+            elif 'thumbnail' in batch and batch['thumbnail'] is not None:
+                # Fallback to batch thumbnail if available
+                thumbnail = batch['thumbnail']  # [1, 1, H, W, 3]
+                if thumbnail.dim() == 5:
+                    thumbnail_img = thumbnail[0, 0].cpu().numpy()  # [H, W, 3]
+                else:
+                    thumbnail_img = thumbnail[0].cpu().numpy()
+            
             # Save individual images
             sample_dir = output_dir / sample_id
             sample_dir.mkdir(exist_ok=True)
@@ -214,6 +231,18 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             Image.fromarray((gt_img * 255).astype(np.uint8)).save(sample_dir / "gt_emission.png")
             Image.fromarray((pred_img * 255).astype(np.uint8)).save(sample_dir / "pred_emission.png")
             Image.fromarray((mask_img * 255).astype(np.uint8)).save(sample_dir / "mask.png")
+            
+            if thumbnail_img is not None:
+                Image.fromarray((thumbnail_img * 255).astype(np.uint8)).save(sample_dir / "thumbnail.png")
+            
+            # Store for overall visualization
+            all_results.append({
+                'sample_id': sample_id,
+                'thumbnail': thumbnail_img,
+                'albedo': albedo_img,
+                'gt_emission': gt_img,
+                'pred_emission': pred_img,
+            })
             
             # Create comparison image (3 columns: input, gt, pred)
             h, w = pred_img.shape[:2]
@@ -228,6 +257,8 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             print(f"         - input_albedo.png")
             print(f"         - gt_emission.png")
             print(f"         - pred_emission.png")
+            if thumbnail_img is not None:
+                print(f"         - thumbnail.png")
             print(f"         - comparison.png (input | gt | pred)")
             
             # Compute metrics
@@ -253,19 +284,189 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
             print(f"         PSNR: {psnr.item():.2f} dB")
             print(f"         SSIM: {ssim.item():.4f}")
     
+    # Create overall visualization grid
+    if all_results:
+        print("\n8. Creating overall visualization...")
+        create_overall_visualization(all_results, output_dir)
+
+    # Render multiview images with emission textures using Blender
+    print("\n9. Rendering multiview images with Blender...")
+    render_blender_multiview(sample_indices, output_dir)
+
     print("\n" + "=" * 80)
     print("✓ Inference Complete!")
     print(f"Results saved to: {output_dir}")
     print(f"Settings: EMA={use_ema and val_with_ema}, data_normalization={data_normalization}")
     print("=" * 80)
+    print("\nBlender multiview rendering will be attempted next...")
+
+
+def render_blender_multiview(sample_indices, output_dir):
+    """Render multiview images using Blender instead of NVDiffRast."""
+    import subprocess
+    import sys
+    import os
+
+    # Get the path to the Blender render script
+    blender_script = os.path.join(os.path.dirname(__file__), "render_inference_blender.py")
+
+    # Find Blender executable
+    blender_exe = None
+    possible_paths = [
+        "/localhome/dya78/software/blender-3.2.0-linux-x64/blender",  # From .zshrc
+        "blender",  # If in PATH
+        "/usr/bin/blender",
+        "/usr/local/bin/blender"
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path) or (path == "blender" and subprocess.run(["which", "blender"], capture_output=True).returncode == 0):
+            blender_exe = path
+            break
+
+    if blender_exe is None:
+        print("ERROR: Blender executable not found!")
+        print("Please ensure Blender is installed and in your PATH, or update the path in render_blender_multiview()")
+        return
+
+    # Run the Blender rendering script with Blender
+    cmd = [blender_exe, "--background", "--python", blender_script, "--inference-dir", str(output_dir)]
+
+    print(f"Running: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(blender_script))
+
+        if result.returncode == 0:
+            print("Blender rendering completed successfully!")
+            # Print any output
+            if result.stdout:
+                print("STDOUT:", result.stdout[-500:])  # Last 500 chars
+        else:
+            print(f"Blender rendering failed with return code {result.returncode}")
+            if result.stderr:
+                print("STDERR:", result.stderr[-1000:])  # Last 1000 chars
+            if result.stdout:
+                print("STDOUT:", result.stdout[-500:])  # Last 500 chars
+
+    except Exception as e:
+        print(f"Failed to run Blender rendering: {e}")
+
+
+
+
+def create_overall_visualization(all_results, output_dir):
+    """Create a grid visualization with all samples.
+    
+    Layout: Each row is one sample
+    Columns: Thumbnail | Albedo | GT Emission | Pred Emission
+    """
+    import cv2
+    
+    n_samples = len(all_results)
+    
+    # Get dimensions from first sample
+    h, w = all_results[0]['albedo'].shape[:2]
+    
+    # Spacing between columns and rows
+    col_spacing = 10
+    row_spacing = 10
+    
+    # Get thumbnail dimensions (keep original aspect ratio, scale to match row height)
+    thumb_h = h
+    if all_results[0]['thumbnail'] is not None:
+        orig_thumb = all_results[0]['thumbnail']
+        orig_h, orig_w = orig_thumb.shape[:2]
+        aspect_ratio = orig_w / orig_h
+        thumb_w = int(thumb_h * aspect_ratio)
+    else:
+        thumb_w = h  # Square fallback
+    
+    # Column widths: thumbnail (original aspect) + 3 UV maps
+    col_widths = [thumb_w, w, w, w]
+    total_width = sum(col_widths) + col_spacing * 3  # 3 gaps between 4 columns
+    total_height = n_samples * h + row_spacing * (n_samples - 1)  # gaps between rows
+    
+    # Add header row
+    header_height = 40
+    total_height += header_height
+    
+    # Create white canvas
+    canvas = np.ones((total_height, total_width, 3), dtype=np.uint8) * 255
+    
+    # Add header labels
+    from PIL import ImageDraw, ImageFont
+    canvas_pil = Image.fromarray(canvas)
+    draw = ImageDraw.Draw(canvas_pil)
+    
+    # Try to use a font, fallback to default if not available
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+    except:
+        font = ImageFont.load_default()
+    
+    headers = ["Thumbnail", "Albedo (Input)", "GT Emission", "Pred Emission"]
+    x_positions = [
+        0,
+        col_widths[0] + col_spacing,
+        col_widths[0] + col_spacing + col_widths[1] + col_spacing,
+        col_widths[0] + col_spacing + col_widths[1] + col_spacing + col_widths[2] + col_spacing
+    ]
+    
+    for header, x_pos, col_w in zip(headers, x_positions, col_widths):
+        # Center text in column
+        text_bbox = draw.textbbox((0, 0), header, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_x = x_pos + (col_w - text_width) // 2
+        draw.text((text_x, 10), header, fill=(0, 0, 0), font=font)
+    
+    canvas = np.array(canvas_pil)
+    
+    # Fill in each row
+    for i, result in enumerate(all_results):
+        row_start = header_height + i * (h + row_spacing)
+        
+        # Column 0: Thumbnail (keep aspect ratio, scale height to h)
+        if result['thumbnail'] is not None:
+            thumb = result['thumbnail']
+            orig_h, orig_w = thumb.shape[:2]
+            aspect_ratio = orig_w / orig_h
+            new_w = int(h * aspect_ratio)
+            thumb_resized = cv2.resize(thumb, (new_w, h), interpolation=cv2.INTER_LINEAR)
+            canvas[row_start:row_start + h, 0:new_w] = (thumb_resized * 255).astype(np.uint8)
+        
+        # Column 1: Albedo
+        col_start = col_widths[0] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['albedo'] * 255).astype(np.uint8)
+        
+        # Column 2: GT Emission
+        col_start = col_widths[0] + col_spacing + col_widths[1] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['gt_emission'] * 255).astype(np.uint8)
+        
+        # Column 3: Pred Emission
+        col_start = col_widths[0] + col_spacing + col_widths[1] + col_spacing + col_widths[2] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['pred_emission'] * 255).astype(np.uint8)
+    
+    # Save overall visualization
+    output_path = output_dir / "overall_visualization.png"
+    Image.fromarray(canvas).save(output_path)
+    print(f"   ✓ Saved overall visualization to: {output_path}")
 
 
 if __name__ == "__main__":
     checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/outputs/pointuv_256res_batch8@20260115-235332/ckpts/last.ckpt"
     
+    # Test set samples
     sample_ids = [
-        "c85c7a1dbb724e9ea1d90abd6445fad4",
-        "5fa9a65e7b0141ee877ed18f4f42d953"
+        "008ac92377d547c391a83f96e485c313",
+        "0d66475a413b4c6288178ad94251677f",
+        "0ee07f5656fc41bf9f36bc19e6605017",
+        "20a021a4f4eb4bc6a920d018ef2d02a2",
+        "4532362cb3764e0e90547d886a37f52a",
+        "6cfba09348b64230b274026e175710ed",
+        "9c7467268bf34ada8e57429736dfba19",
+        "fff48e914c4847a08660b9e08b1b733c",
+        "21170b1a94664f2fae7c00c4e2c25577",
+        "f42e52eb50c041cfb4e29310e4a95e33",
     ]
     
     output_dir = "inference_outputs"

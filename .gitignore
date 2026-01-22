@@ -22,6 +22,7 @@ inference_outputs/
 .venv/
 venv/
 env/
+videos/
 
 # Python version management
 .python-version
