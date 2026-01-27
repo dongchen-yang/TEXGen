@@ -285,6 +285,13 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             self.dataset, self.true_current_epoch, self.true_global_step
         )
         self.do_update_step_end(self.true_current_epoch, self.true_global_step)
+        
+        # Periodic garbage collection to prevent gradual memory accumulation
+        if batch_idx % 10 == 0:
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+        
         tr.end("train_batch_end")
 
     def on_validation_batch_end(self, outputs, batch, batch_idx):

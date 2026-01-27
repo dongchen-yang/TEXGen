@@ -29,7 +29,7 @@ data:
   width: 256
   uv_height: 256
   uv_width: 256
-  batch_size: 32
+  batch_size: 24  # Reduced from 32 to prevent OOM (was using 74GB/79GB)
   eval_batch_size: 1  # Must be 1 - test_step saves individual images by scene_id
   num_workers: 8  # 8 workers is typically sufficient
 
@@ -47,6 +47,7 @@ system:
   prediction_type: "v_prediction"
   check_train_every_n_steps: 100
   test_save_json: false
+  cleanup_after_validation_step: true  # Enable memory cleanup after each validation step
 
   test_cfg_scale: 2.0
   test_num_steps: 50

@@ -329,11 +329,11 @@ class LightGenSystem(TEXGenDiffusion):
                 
                 # Add albedo (UV space input condition) first if available
                 if albedo_img is not None:
-                    images.append(wandb.Image(albedo_img, caption="Input Albedo (UV)"))
+                    images.append(wandb.Image(albedo_img.copy(), caption="Input Albedo (UV)"))
                 
                 # Add thumbnail (3D rendered input condition) if available
                 if thumbnail_img is not None:
-                    images.append(wandb.Image(thumbnail_img.cpu().detach().numpy(), caption="Input Rendering"))
+                    images.append(wandb.Image(thumbnail_img.cpu().detach().numpy().copy(), caption="Input Rendering"))
                 
                 if is_mask_only:
                     # MASK-ONLY MODE: Show binary masks
@@ -346,11 +346,12 @@ class LightGenSystem(TEXGenDiffusion):
                     gt_mask_binary = (gt_img > 0.5).float().repeat(1, 3, 1, 1)
                     
                     images.extend([
-                        wandb.Image(pred_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Mask (continuous)"),
-                        wandb.Image(gt_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy(), caption="GT Mask (continuous)"),
-                        wandb.Image(pred_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Mask (binary, >0.5)"),
-                        wandb.Image(gt_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy(), caption="GT Mask (binary)"),
+                        wandb.Image(pred_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Mask (continuous)"),
+                        wandb.Image(gt_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="GT Mask (continuous)"),
+                        wandb.Image(pred_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Mask (binary, >0.5)"),
+                        wandb.Image(gt_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="GT Mask (binary)"),
                     ])
+                    del pred_mask_vis, gt_mask_vis, pred_mask_binary, gt_mask_binary
                 else:
                     # RGB MODE: Show emission and masks
                     # GT emission mask
@@ -362,17 +363,28 @@ class LightGenSystem(TEXGenDiffusion):
                     pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
                     
                     images.extend([
-                        wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Predicted Emission"),
-                        wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy(), caption="Ground Truth"),
-                        wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
-                        wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
+                        wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Emission"),
+                        wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Ground Truth"),
+                        wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
+                        wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
                     ])
+                    del gt_emission_mask, pred_emission_mask
                 
                 self._wandb_logger.log_image(
                     key="train/predictions",
                     images=images,
                     step=self.global_step
                 )
+                # Aggressive cleanup of all visualization tensors
+                del images, pred_x0, pred_img, gt_img
+                if albedo_img is not None:
+                    del albedo_img, albedo, albedo_vis
+                if thumbnail_img is not None:
+                    del thumbnail_img, thumbnail
+        
+        # Explicit cleanup of large intermediate tensors after every training step
+        del out, addition_info, outputs
+        del diffusion_data, condition_info
         
         return total_loss
     
@@ -381,6 +393,10 @@ class LightGenSystem(TEXGenDiffusion):
         # Call parent validation (computes metrics and saves images)
         # The parent's test_step already logs composite images to test/validation/{object_id}
         result = super().validation_step(batch, batch_idx)
+        # Explicit cleanup for memory management
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         return result
     
     def get_diffusion_loss(self, out, diffusion_data):

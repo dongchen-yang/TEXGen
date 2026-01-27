@@ -214,6 +214,13 @@ class TEXGenDiffusion(BaseSystem):
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
             self.backbone_ema(self.backbone)
+        
+        # Periodic aggressive cleanup to prevent gradual memory leak
+        # Clean up every batch to ensure no accumulation
+        import gc
+        if hasattr(self, 'global_step') and self.global_step % 5 == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
 
     @contextmanager
     def ema_scope(self, context=None):
@@ -351,6 +358,9 @@ class TEXGenDiffusion(BaseSystem):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
+        # Aggressive memory cleanup to prevent OOM during validation
+        import gc
+        gc.collect()
         torch.cuda.empty_cache()
 
     @torch.no_grad()
@@ -579,7 +589,8 @@ class TEXGenDiffusion(BaseSystem):
         noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise
         #breakpoint()
-        mid_result = []
+        # Only accumulate mid_result if saving is enabled (to prevent memory leaks)
+        mid_result = [] if self.cfg.test_save_mid_result else None
         for i, t in enumerate(timesteps):
             if self.train_regression:
                 t = torch.tensor([self.num_train_timesteps-1], device=device)
@@ -622,13 +633,15 @@ class TEXGenDiffusion(BaseSystem):
                 if torch.isnan(noisy_images).any():
                     print("Nan in noisy_images")
                     breakpoint()
-                mid_result.append(
-                    {
-                        "x0": step_out,
-                        "x_t": diffusion_data["noisy_images"],
-                        "x_t_1": noisy_images,
-                    }
-                )
+                # Only save mid_result if enabled (to prevent memory leaks)
+                if mid_result is not None:
+                    mid_result.append(
+                        {
+                            "x0": step_out,
+                            "x_t": diffusion_data["noisy_images"],
+                            "x_t_1": noisy_images,
+                        }
+                    )
             #spuv.info("Test step {timestep}")
 
         pred_x0 = noisy_images
@@ -637,7 +650,7 @@ class TEXGenDiffusion(BaseSystem):
             "baked_texture": addition_info['baked_texture'],
             "gt_x0": diffusion_data["sample_images"],
             "mask_map": diffusion_data["mask_map"],
-            "mid_result": mid_result,
+            "mid_result": mid_result if mid_result is not None else [],
         }
 
         return texture_map_outputs

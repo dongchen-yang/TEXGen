@@ -244,6 +244,9 @@ class TEXGenDiffusion(TEXGenBaseSystem):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
+        # Aggressive memory cleanup to prevent OOM during validation
+        import gc
+        gc.collect()
         torch.cuda.empty_cache()
 
     @torch.no_grad()
@@ -409,8 +412,15 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 f"it{self.true_global_step}-test/preview/thumbnail_{self.global_rank}_{batch_idx}.jpg",
                 [{"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}}],
             )
-            
-            # 3D rendering disabled - only save UV maps for faster validation
+        
+        # Explicit cleanup of large tensors to prevent memory leaks
+        del texture_map_outputs
+        del pred_x0, gt_x0, mask_map, pred_img, gt_img
+        del pred_vis, gt_vis, pred_value, gt_value, pred_flip, gt_flip
+        if has_thumbnail:
+            del thumbnail, thumbnail_img
+        
+        # 3D rendering disabled - only save UV maps for faster validation
             # Uncomment below if you need 3D rendered views
             """
             img = rearrange(img, "B C H W -> B H W C")

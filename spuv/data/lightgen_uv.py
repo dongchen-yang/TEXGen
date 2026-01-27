@@ -190,8 +190,16 @@ class LightGenDataset(Dataset):
         sample_id = sample_info["sample_id"]
         npz_file = sample_info["npz_file"]
         
-        # Load the NPZ file
-        data = np.load(npz_file)
+        # Load the NPZ file - extract data immediately to allow file to be closed
+        npz_data = np.load(npz_file)
+        occupancy_np = npz_data['occupancy'].copy()
+        position_np = npz_data['position'].copy()
+        objnormal_np = npz_data['objnormal'].copy()
+        color_np = npz_data['color'].copy()
+        metal_np = npz_data['metal'].copy()
+        rough_np = npz_data['rough'].copy()
+        emission_color_np = npz_data['emission_color'].copy()
+        npz_data.close()  # Explicitly close to free file handles
         
         # Load pre-rendered thumbnail for CLIP conditioning (from local data directory)
         # Thumbnails are stored in data/baked_uv_local/thumbnails/
@@ -200,20 +208,24 @@ class LightGenDataset(Dataset):
         if os.path.exists(thumbnail_path):
             from PIL import Image
             import torchvision.transforms.functional as TF
-            thumbnail_img = Image.open(thumbnail_path).convert('RGB')
-            # Resize to fixed size (224x224) for batching - CLIP will resize anyway
-            thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
-            thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3], normalize to [0, 1]
-            thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
+            with Image.open(thumbnail_path) as thumbnail_pil:
+                thumbnail_img = thumbnail_pil.convert('RGB')
+                # Resize to fixed size (224x224) for batching - CLIP will resize anyway
+                thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
+                thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3], normalize to [0, 1]
+                thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
         
-        # Extract relevant data
-        occupancy = torch.from_numpy(data['occupancy']).float()  # [512, 512, 1]
-        position = torch.from_numpy(decode_uint16_to_float(data['position'])).float()  # [512, 512, 3]
-        objnormal = torch.from_numpy(decode_uint16_to_float(data['objnormal'], -1.0, 1.0)).float()  # [512, 512, 3]
-        color = torch.from_numpy(decode_uint8_to_float(data['color'])).float()  # [512, 512, 3] (albedo)
-        metal = torch.from_numpy(decode_uint8_to_float(data['metal'])).float()  # [512, 512, 1]
-        rough = torch.from_numpy(decode_uint8_to_float(data['rough'])).float()  # [512, 512, 1]
-        emission_color = torch.from_numpy(decode_uint8_to_float(data['emission_color'])).float()  # [512, 512, 3]
+        # Extract relevant data and convert to torch tensors
+        occupancy = torch.from_numpy(occupancy_np).float()  # [512, 512, 1]
+        position = torch.from_numpy(decode_uint16_to_float(position_np)).float()  # [512, 512, 3]
+        objnormal = torch.from_numpy(decode_uint16_to_float(objnormal_np, -1.0, 1.0)).float()  # [512, 512, 3]
+        color = torch.from_numpy(decode_uint8_to_float(color_np)).float()  # [512, 512, 3] (albedo)
+        metal = torch.from_numpy(decode_uint8_to_float(metal_np)).float()  # [512, 512, 1]
+        rough = torch.from_numpy(decode_uint8_to_float(rough_np)).float()  # [512, 512, 1]
+        emission_color = torch.from_numpy(decode_uint8_to_float(emission_color_np)).float()  # [512, 512, 3]
+        
+        # Clean up numpy arrays to free memory
+        del occupancy_np, position_np, objnormal_np, color_np, metal_np, rough_np, emission_color_np
         
         # Rearrange from [H, W, C] to [C, H, W]
         occupancy = occupancy.permute(2, 0, 1)  # [1, 512, 512]
