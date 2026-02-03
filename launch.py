@@ -136,7 +136,9 @@ def main(args, extras) -> None:
     wandb_run_id = None
     if cfg.resume is not None and args.train and args.wandb:
         try:
-            ckpt = torch.load(cfg.resume, map_location="cpu")
+            # Load checkpoint with weights_only=False to allow OmegaConf objects
+            # This is safe since we trust our own checkpoints
+            ckpt = torch.load(cfg.resume, map_location="cpu", weights_only=False)
             if 'wandb_run_id' in ckpt:
                 wandb_run_id = ckpt['wandb_run_id']
                 spuv.info(f"Resuming wandb run with ID: {wandb_run_id}")
@@ -265,7 +267,7 @@ def main(args, extras) -> None:
     def set_system_status(system: BaseSystem, ckpt_path: Optional[str]):
         if ckpt_path is None:
             return
-        ckpt = torch.load(ckpt_path, map_location="cpu")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         system.set_resume_status(ckpt["epoch"], ckpt["global_step"])
 
     if args.train:

@@ -40,7 +40,7 @@ def load_module_weights(
     if map_location is None:
         map_location = get_device()
 
-    ckpt = torch.load(path, map_location=map_location)
+    ckpt = torch.load(path, map_location=map_location, weights_only=False)
     state_dict = ckpt["state_dict"]
 
     if mapping is not None:
