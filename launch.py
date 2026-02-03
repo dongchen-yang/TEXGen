@@ -11,10 +11,21 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 # Fix for PyTorch 2.6 checkpoint loading with OmegaConf
 # PyTorch 2.6 changed weights_only default to True, but checkpoints contain OmegaConf objects
 import torch.serialization
+import typing
 try:
     from omegaconf import DictConfig, ListConfig
     from omegaconf.base import ContainerMetadata
-    torch.serialization.add_safe_globals([ContainerMetadata, DictConfig, ListConfig])
+    # Add common types that might be in checkpoints
+    safe_classes = [
+        ContainerMetadata, 
+        DictConfig, 
+        ListConfig,
+        typing.Any,
+    ]
+    # Add typing module generics if available
+    if hasattr(typing, 'Dict'):
+        safe_classes.extend([typing.Dict, typing.List, typing.Optional, typing.Union, typing.Tuple])
+    torch.serialization.add_safe_globals(safe_classes)
 except ImportError:
     pass  # OmegaConf not yet imported, will be handled later
 
