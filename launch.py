@@ -8,26 +8,21 @@ import sys
 os.environ['HF_HUB_DISABLE_EXPERIMENTAL_WARNING'] = '1'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
-# Fix for PyTorch 2.6 checkpoint loading with OmegaConf
-# PyTorch 2.6 changed weights_only default to True, but checkpoints contain OmegaConf objects
-import torch.serialization
-import typing
-try:
-    from omegaconf import DictConfig, ListConfig
-    from omegaconf.base import ContainerMetadata
-    # Add common types that might be in checkpoints
-    safe_classes = [
-        ContainerMetadata, 
-        DictConfig, 
-        ListConfig,
-        typing.Any,
-    ]
-    # Add typing module generics if available
-    if hasattr(typing, 'Dict'):
-        safe_classes.extend([typing.Dict, typing.List, typing.Optional, typing.Union, typing.Tuple])
-    torch.serialization.add_safe_globals(safe_classes)
-except ImportError:
-    pass  # OmegaConf not yet imported, will be handled later
+# Fix for PyTorch 2.6 checkpoint loading
+# PyTorch 2.6 changed weights_only default to True, but our checkpoints contain complex objects
+# Since we trust our own checkpoints, we'll patch torch.load to use weights_only=False
+import torch
+_original_torch_load = torch.load
+
+def _patched_torch_load(*args, **kwargs):
+    """Patched torch.load that defaults to weights_only=False for checkpoint compatibility"""
+    # If weights_only is not specified, default to False (PyTorch 2.5 behavior)
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+
+# Apply the patch
+torch.load = _patched_torch_load
 
 
 class ColoredFilter(logging.Filter):
