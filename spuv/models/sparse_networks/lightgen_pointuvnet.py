@@ -51,7 +51,8 @@ class LightGenPointUVNet(PointUVNet):
             timestep: [B] - diffusion timestep
             clip_embeddings: [text_emb, image_emb] - CLIP embeddings (can be None)
             mesh: mesh data (not used in LightGen)
-            image_info: dict with 'baked_texture' and 'baked_weights' (pre-baked materials)
+            image_info: dict with 'baked_texture' [B, 5, H, W] (albedo+metal+rough) 
+                        and 'baked_weights' [B, 1, H, W] (occupancy mask)
             data_normalization: bool - whether data is normalized to [-1, 1]
             condition_drop: [B] - dropout mask for classifier-free guidance
         """
@@ -112,7 +113,11 @@ class LightGenPointUVNet(PointUVNet):
             ]
 
         # Concatenate inputs: [noisy_emission, position, material, mask]
-        # This matches the original PointUVNet input format
+        # x_dense: [B, 3, H, W] - noisy emission
+        # position_map: [B, 3, H, W] - 3D positions
+        # baked_texture: [B, 5, H, W] - albedo(3) + metallic(1) + roughness(1)
+        # baked_weights: [B, 1, H, W] - occupancy mask
+        # Total: 3 + 3 + 5 + 1 = 12 channels
         x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
         x_dense = self.input_conv(x_concat) * mask_map
         

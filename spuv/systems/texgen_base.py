@@ -211,16 +211,22 @@ class TEXGenDiffusion(BaseSystem):
         # Convert to tensor and return
         return torch.tensor(rgb, dtype=torch.float32)
 
-    def on_train_batch_end(self, *args, **kwargs):
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        # Call parent's on_train_batch_end first (important for base cleanup logic)
+        super().on_train_batch_end(outputs, batch, batch_idx)
+        
         if self.use_ema:
             self.backbone_ema(self.backbone)
         
         # Periodic aggressive cleanup to prevent gradual memory leak
-        # Clean up every batch to ensure no accumulation
+        # Clean up every 5 steps to ensure no accumulation
         import gc
+        from spuv.utils.memory_tracker import log_memory
         if hasattr(self, 'global_step') and self.global_step % 5 == 0:
+            log_memory(f"before_ema_cleanup (step={self.global_step})", self.global_step)
             gc.collect()
             torch.cuda.empty_cache()
+            log_memory(f"after_ema_cleanup (step={self.global_step})", self.global_step)
 
     @contextmanager
     def ema_scope(self, context=None):

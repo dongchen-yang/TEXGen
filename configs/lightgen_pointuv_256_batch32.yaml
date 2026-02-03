@@ -35,7 +35,7 @@ data:
   width: 256
   uv_height: 256
   uv_width: 256
-  batch_size: 24  # Reduced from 32 to prevent OOM (was using 74GB/79GB)
+  batch_size: 32
   eval_batch_size: 1  # Must be 1 - test_step saves individual images by scene_id
   num_workers: 8  # 8 workers is typically sufficient
 
@@ -53,6 +53,7 @@ system:
   prediction_type: "v_prediction"
   check_train_every_n_steps: 100
   test_save_json: false
+  test_save_mid_result: false  # IMPORTANT: Keep false to prevent memory accumulation
   cleanup_after_validation_step: true  # Enable memory cleanup after each validation step
 
   test_cfg_scale: 2.0
@@ -70,8 +71,9 @@ system:
   # Backbone: LightGenPointUVNet (modified PointUVNet for pre-baked UV data)
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
-    # Input channels: noisy_emission(3) + position_map(3) + baked_texture(3) + baked_weights(1) = 10
-    in_channels: 10
+    # Input channels: noisy_emission(3) + position_map(3) + baked_texture(5) + baked_weights(1) = 12
+    # baked_texture = albedo(3) + metallic(1) + roughness(1)
+    in_channels: 12
     out_channels: 3  # emission RGB
     
     # Architecture settings (same as TEXGen)

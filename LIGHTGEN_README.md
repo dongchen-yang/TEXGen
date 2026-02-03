@@ -43,12 +43,13 @@ Each `somage.npz` file should contain:
 ## Model Architecture
 
 The model uses a U-Net style architecture with:
-- **Input channels**: 11
+- **Input channels**: 12
+  - Noisy emission map: 3 channels
   - Position map: 3 channels
-  - Normal map: 3 channels
   - Albedo map: 3 channels
   - Metallic map: 1 channel
   - Roughness map: 1 channel
+  - Occupancy mask: 1 channel
 - **Output channels**: 3 (RGB emission map)
 
 The model is based on diffusion models with the following key components:

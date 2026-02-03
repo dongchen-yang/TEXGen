@@ -25,6 +25,7 @@ from spuv.utils.mesh_utils import uv_padding
 from spuv.utils.nvdiffrast_utils import *
 from spuv.utils.lit_ema import LitEma
 from spuv.utils.image_metrics import SSIM, PSNR
+from spuv.utils.memory_tracker import log_memory, set_baseline
 
 
 class LightGenSystem(TEXGenDiffusion):
@@ -49,6 +50,12 @@ class LightGenSystem(TEXGenDiffusion):
         self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(
             self.cfg.image_tokenizer
         )
+        
+        # Initialize memory tracker for debugging OOM issues
+        from spuv.utils.memory_tracker import init_tracker
+        # Log memory every step for first few epochs, then every 5 steps
+        self.memory_tracker = init_tracker(enabled=True, log_interval=1)
+        spuv.info("[MEMORY] Memory tracking enabled for OOM debugging")
         
     def prepare_condition_info(self, batch):
         """
@@ -132,10 +139,9 @@ class LightGenSystem(TEXGenDiffusion):
         metal_map = condition.get("metal_map")    # [B, 1, H, W]
         rough_map = condition.get("rough_map")    # [B, 1, H, W]
         
-        # Prepare baked_texture: use albedo as the main material representation
-        # You could also concatenate multiple channels: torch.cat([albedo, normal], dim=1)
-        # For PointUVNet, baked_texture should match the expected input channels
-        baked_texture = albedo_map  # [B, 3, H, W]
+        # Prepare baked_texture: include all material properties (albedo + metallic + roughness)
+        # This gives us full PBR material representation
+        baked_texture = torch.cat([albedo_map, metal_map, rough_map], dim=1)  # [B, 5, H, W]
         baked_weights = mask_map     # [B, 1, H, W]
         
         # Prepare image info with conditioning
@@ -244,15 +250,28 @@ class LightGenSystem(TEXGenDiffusion):
         if batch is None:
             return None
         
+        # Memory tracking: log at start of training step
+        if batch_idx == 0 or batch_idx % 10 == 0:
+            log_memory(f"train_step_start (epoch={self.current_epoch}, batch={batch_idx})", self.global_step)
+        
         # Prepare data
         diffusion_data = self.prepare_diffusion_data(batch)
         condition_info = self.prepare_condition_info(batch)
         
+        if batch_idx % 10 == 0:
+            log_memory(f"after_data_prep (batch={batch_idx})", self.global_step)
+        
         # Forward pass
         out, addition_info = self(condition_info, diffusion_data)
         
+        if batch_idx % 10 == 0:
+            log_memory(f"after_forward (batch={batch_idx})", self.global_step)
+        
         # Compute loss
         loss_dict = self.get_diffusion_loss(out, diffusion_data)
+        
+        if batch_idx % 10 == 0:
+            log_memory(f"after_loss_compute (batch={batch_idx})", self.global_step)
         
         # Log losses (both per-step and per-epoch for smooth curves)
         for key, value in loss_dict.items():
@@ -386,17 +405,34 @@ class LightGenSystem(TEXGenDiffusion):
         del out, addition_info, outputs
         del diffusion_data, condition_info
         
+        # Memory tracking: log after cleanup
+        if batch_idx % 10 == 0:
+            log_memory(f"train_step_end (batch={batch_idx})", self.global_step)
+        
         return total_loss
     
     def validation_step(self, batch, batch_idx):
         """Validation step - images are logged via test tab composite views"""
+        # Memory tracking at validation start
+        if batch_idx == 0:
+            log_memory(f"validation_start (epoch={self.current_epoch})", self.global_step, force=True)
+        
         # Call parent validation (computes metrics and saves images)
         # The parent's test_step already logs composite images to test/validation/{object_id}
         result = super().validation_step(batch, batch_idx)
+        
+        # Memory tracking after validation
+        if batch_idx % 10 == 0 or batch_idx == 0:
+            log_memory(f"after_validation (batch={batch_idx})", self.global_step)
+        
         # Explicit cleanup for memory management
         import gc
         gc.collect()
         torch.cuda.empty_cache()
+        
+        if batch_idx % 10 == 0 or batch_idx == 0:
+            log_memory(f"after_val_cleanup (batch={batch_idx})", self.global_step)
+        
         return result
     
     def get_diffusion_loss(self, out, diffusion_data):
