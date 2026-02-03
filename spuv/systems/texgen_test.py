@@ -422,8 +422,8 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         del pred_x0, gt_x0, mask_map, pred_img, gt_img
         
         # 3D rendering disabled - only save UV maps for faster validation
-            # Uncomment below if you need 3D rendered views
-            """
+        # Uncomment below if you need 3D rendered views
+        """
             img = rearrange(img, "B C H W -> B H W C")
             mvp_mtx = batch['mvp_mtx']
             mesh = batch['mesh']
