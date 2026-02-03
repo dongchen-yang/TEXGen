@@ -403,6 +403,9 @@ class LightGenDataModule(pl.LightningDataModule):
             batch_size=batch_size,
             shuffle=shuffle,
             collate_fn=self.collate_fn,
+            persistent_workers=True if self.cfg.num_workers > 0 else False,  # Keep workers alive between epochs
+            pin_memory=True,  # Faster GPU transfer
+            prefetch_factor=2,  # Prefetch 2 batches per worker
         )
 
     def train_dataloader(self):
