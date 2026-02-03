@@ -10,15 +10,15 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 # Fix for PyTorch 2.6 checkpoint loading
 # PyTorch 2.6 changed weights_only default to True, but our checkpoints contain complex objects
-# Since we trust our own checkpoints, we'll patch torch.load to use weights_only=False
+# Since we trust our own checkpoints, we'll patch torch.load to always use weights_only=False
 import torch
 _original_torch_load = torch.load
 
 def _patched_torch_load(*args, **kwargs):
-    """Patched torch.load that defaults to weights_only=False for checkpoint compatibility"""
-    # If weights_only is not specified, default to False (PyTorch 2.5 behavior)
-    if 'weights_only' not in kwargs:
-        kwargs['weights_only'] = False
+    """Patched torch.load that forces weights_only=False for checkpoint compatibility"""
+    # Force weights_only=False since we trust our own checkpoints
+    # This is necessary because PyTorch Lightning explicitly passes weights_only=True
+    kwargs['weights_only'] = False
     return _original_torch_load(*args, **kwargs)
 
 # Apply the patch
