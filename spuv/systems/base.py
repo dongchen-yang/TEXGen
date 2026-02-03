@@ -274,9 +274,11 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         import gc
         if hasattr(self, 'current_epoch'):
             log_memory(f"epoch_end_before_cleanup (epoch={self.current_epoch})", force=True)
-            gc.collect()
-            torch.cuda.empty_cache()
-            log_memory(f"epoch_end_after_cleanup (epoch={self.current_epoch})", force=True)
+            # Only do expensive cleanup every 10 epochs to avoid slowdown
+            if self.current_epoch % 10 == 0:
+                gc.collect()
+                torch.cuda.empty_cache()
+                log_memory(f"epoch_end_after_cleanup (epoch={self.current_epoch})", force=True)
 
     def on_validation_epoch_end(self):
         pass
