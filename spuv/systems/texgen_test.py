@@ -246,8 +246,8 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         """Switch to EMA weights once at the start of validation"""
         if self.use_ema and self.val_with_ema:
             spuv.info("Validation with EMA weights: Switching to EMA weights")
-            self.ema.store(self.backbone.parameters())
-            self.ema.copy_to(self.backbone.parameters())
+            self.backbone_ema.store(self.backbone.parameters())
+            self.backbone_ema.copy_to(self.backbone)
             self._ema_switched = True
         else:
             self._ema_switched = False
@@ -256,7 +256,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         """Restore training weights once at the end of validation"""
         if self._ema_switched:
             spuv.info("Validation with EMA weights: Restoring training weights")
-            self.ema.restore(self.backbone.parameters())
+            self.backbone_ema.restore(self.backbone.parameters())
             self._ema_switched = False
     
     def validation_step(self, batch, batch_idx):
