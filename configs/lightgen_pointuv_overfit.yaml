@@ -131,7 +131,7 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_baseline/"  # Custom checkpoint directory
+  # dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_baseline/"  # Custom checkpoint directory
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
