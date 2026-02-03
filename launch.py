@@ -273,7 +273,8 @@ def main(args, extras) -> None:
     if args.train:
         #system = torch.compile(system)
         #spuv.info("compiled system")
-        trainer.fit(system, datamodule=dm, ckpt_path=cfg.resume)
+        # Use weights_only=False to allow loading OmegaConf objects in checkpoints
+        trainer.fit(system, datamodule=dm, ckpt_path=cfg.resume, weights_only=False)
         trainer.test(system, datamodule=dm)
         if args.gradio:
             # also export assets if in gradio mode
@@ -281,14 +282,14 @@ def main(args, extras) -> None:
     elif args.validate:
         # manually set epoch and global_step as they cannot be automatically resumed
         set_system_status(system, cfg.resume)
-        trainer.validate(system, datamodule=dm, ckpt_path=cfg.resume)
+        trainer.validate(system, datamodule=dm, ckpt_path=cfg.resume, weights_only=False)
     elif args.test:
         # manually set epoch and global_step as they cannot be automatically resumed
         set_system_status(system, cfg.resume)
-        trainer.test(system, datamodule=dm, ckpt_path=cfg.resume)
+        trainer.test(system, datamodule=dm, ckpt_path=cfg.resume, weights_only=False)
     elif args.export:
         set_system_status(system, cfg.resume)
-        trainer.predict(system, datamodule=dm, ckpt_path=cfg.resume)
+        trainer.predict(system, datamodule=dm, ckpt_path=cfg.resume, weights_only=False)
 
 
 if __name__ == "__main__":
