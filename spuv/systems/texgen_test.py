@@ -242,6 +242,23 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             )
 
     @torch.no_grad()
+    def on_validation_epoch_start(self):
+        """Switch to EMA weights once at the start of validation"""
+        if self.use_ema and self.val_with_ema:
+            spuv.info("Validation with EMA weights: Switching to EMA weights")
+            self.ema.store(self.backbone.parameters())
+            self.ema.copy_to(self.backbone.parameters())
+            self._ema_switched = True
+        else:
+            self._ema_switched = False
+    
+    def on_validation_epoch_end(self):
+        """Restore training weights once at the end of validation"""
+        if self._ema_switched:
+            spuv.info("Validation with EMA weights: Restoring training weights")
+            self.ema.restore(self.backbone.parameters())
+            self._ema_switched = False
+    
     def validation_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
         # Aggressive memory cleanup to prevent OOM during validation
@@ -256,12 +273,8 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             return None
         try:
             with torch.cuda.amp.autocast(enabled=False):
-                if self.use_ema and self.val_with_ema:
-                    with self.ema_scope("Validation with ema weights"):
-                        texture_map_outputs = self.test_pipeline(batch)
-                else:
-                    spuv.info("Validation without ema weights")
-                    texture_map_outputs = self.test_pipeline(batch)
+                # EMA weights are already switched at epoch level, just run inference
+                texture_map_outputs = self.test_pipeline(batch)
         except Exception as e:
             import traceback
             spuv.info(f"Error in test pipeline: {e}")
