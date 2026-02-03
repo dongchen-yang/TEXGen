@@ -3,6 +3,12 @@ tag: "pointuv_256_overfit_baseline"
 exp_root_dir: "outputs"
 seed: 42
 
+# Resume configuration - automatically continues from latest checkpoint
+auto_resume: true  # Enable automatic resumption from latest checkpoint
+
+# Custom output directory (optional) - overrides exp_root_dir for all outputs
+# custom_output_dir: "/scratch/dya78/lightgen/overfit_outputs"
+
 # Data configuration - Single sample for overfitting test
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
@@ -123,10 +129,19 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
+  dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_baseline/"  # Custom checkpoint directory
   save_last: true
   save_top_k: 3
   every_n_epochs: 10
   monitor: "val/psnr"
   mode: "max"
   save_on_train_epoch_end: false  # Wait for validation before saving
+
+# Wandb configuration (use --wandb flag to enable)
+wandb:
+  project: "LightGen"  # Wandb project name
+  # entity: "your_team_name"  # Optional: your wandb team/username
+  # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
+  tags: ["overfit"]  # Tags for organization
+  notes: "Overfitting test on single sample - baseline configuration"
 

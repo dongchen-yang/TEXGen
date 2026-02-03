@@ -108,6 +108,43 @@ def main(args, extras) -> None:
     # set a different seed for each device
     pl.seed_everything(cfg.seed + get_rank(), workers=True)
 
+    # Auto-resume: find latest checkpoint if enabled or if resume="last"/"latest"
+    if (cfg.auto_resume or cfg.resume in ["last", "latest"]) and args.train:
+        # Determine checkpoint directory
+        if "dirpath" in cfg.checkpoint:
+            ckpt_dir = cfg.checkpoint["dirpath"]
+        else:
+            ckpt_dir = os.path.join(cfg.trial_dir, "ckpts")
+        
+        if os.path.exists(ckpt_dir):
+            # Find all checkpoint files
+            import glob
+            ckpt_files = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
+            if ckpt_files:
+                # Get the most recent checkpoint by modification time
+                latest_ckpt = max(ckpt_files, key=os.path.getmtime)
+                cfg.resume = latest_ckpt
+                spuv.info(f"Auto-resume: Found latest checkpoint at {latest_ckpt}")
+            else:
+                cfg.resume = None
+                spuv.info(f"Auto-resume enabled but no checkpoints found in {ckpt_dir}, starting fresh")
+        else:
+            cfg.resume = None
+            spuv.info(f"Auto-resume enabled but checkpoint directory {ckpt_dir} does not exist, starting fresh")
+
+    # Load wandb run ID from checkpoint if resuming
+    wandb_run_id = None
+    if cfg.resume is not None and args.train and args.wandb:
+        try:
+            ckpt = torch.load(cfg.resume, map_location="cpu")
+            if 'wandb_run_id' in ckpt:
+                wandb_run_id = ckpt['wandb_run_id']
+                spuv.info(f"Resuming wandb run with ID: {wandb_run_id}")
+            else:
+                spuv.warn("No wandb run ID found in checkpoint, starting new wandb run")
+        except Exception as e:
+            spuv.warn(f"Failed to load wandb run ID from checkpoint: {e}")
+
     dm = spuv.find(cfg.data_cls)(cfg.data)
     system: BaseSystem = spuv.find(cfg.system_cls)(
         cfg.system, resumed=cfg.resume is not None
@@ -125,7 +162,13 @@ def main(args, extras) -> None:
     callbacks = []
     if args.train:
         # Use custom checkpoint dirpath if specified, otherwise default to trial_dir/ckpts
-        ckpt_dirpath = cfg.checkpoint.get("dirpath", os.path.join(cfg.trial_dir, "ckpts"))
+        # This respects both cfg.checkpoint.dirpath and cfg.custom_output_dir
+        if "dirpath" in cfg.checkpoint:
+            ckpt_dirpath = cfg.checkpoint["dirpath"]
+        else:
+            # Default to trial_dir/ckpts (which already uses custom_output_dir if set)
+            ckpt_dirpath = os.path.join(cfg.trial_dir, "ckpts")
+        
         ckpt_config = {k: v for k, v in cfg.checkpoint.items() if k != "dirpath"}
         callbacks += [
             ModelCheckpoint(
@@ -164,12 +207,44 @@ def main(args, extras) -> None:
             TensorBoardLogger(cfg.trial_dir, name="tb_logs"),
         ]
         if args.wandb:
-            wandb_logger = WandbLogger(
-                project="LightGen",  # Project name on wandb
-                name=f"{cfg.name}-{cfg.tag}",  # Run name
-                config=dict(cfg),  # Log config
-            )
+            # Default wandb configuration
+            wandb_config = {
+                "project": "LightGen",  # Default project name
+                "name": f"{cfg.name}-{cfg.tag}",  # Default run name
+                "config": dict(cfg),  # Log config
+            }
+            
+            # Handle wandb resumption if run ID is available
+            if wandb_run_id is not None:
+                wandb_config['id'] = wandb_run_id
+                wandb_config['resume'] = 'allow'  # Resume if possible, otherwise start new run
+                spuv.info(f"Configuring wandb to resume run ID: {wandb_run_id}")
+            
+            # Override with custom wandb settings from config if provided
+            if hasattr(cfg, 'wandb') and cfg.wandb:
+                # Update with custom settings, preserving defaults for unspecified fields
+                if 'project' in cfg.wandb:
+                    wandb_config['project'] = cfg.wandb['project']
+                if 'name' in cfg.wandb:
+                    wandb_config['name'] = cfg.wandb['name']
+                if 'entity' in cfg.wandb:
+                    wandb_config['entity'] = cfg.wandb['entity']
+                if 'dir' in cfg.wandb:
+                    # Custom directory for wandb logs
+                    wandb_config['dir'] = cfg.wandb['dir']
+                elif cfg.custom_output_dir:
+                    # Use custom output directory for wandb if specified
+                    wandb_config['dir'] = os.path.join(cfg.trial_dir, "wandb")
+                # Pass through any other wandb settings (except id and resume which are handled above)
+                for key, value in cfg.wandb.items():
+                    if key not in ['project', 'name', 'entity', 'dir', 'config', 'id', 'resume']:
+                        wandb_config[key] = value
+            
+            wandb_logger = WandbLogger(**wandb_config)
             system._wandb_logger = wandb_logger
+            # Set the wandb run ID in the system for future checkpoints
+            if wandb_run_id is not None:
+                system.set_wandb_run_id(wandb_run_id)
             loggers += [wandb_logger]
         rank_zero_only(
             lambda: write_to_text(

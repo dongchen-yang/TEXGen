@@ -51,6 +51,9 @@ class ExperimentConfig:
     use_timestamp: bool = True
     timestamp: Optional[str] = None
     exp_root_dir: str = "outputs"
+    
+    # Custom output directory configuration
+    custom_output_dir: Optional[str] = None  # If set, overrides exp_root_dir for all outputs
 
     ### these shouldn't be set manually
     exp_dir: str = "outputs/default"
@@ -60,6 +63,7 @@ class ExperimentConfig:
     ###
 
     resume: Optional[str] = None
+    auto_resume: bool = False  # If True, automatically resume from latest checkpoint in checkpoint dir
 
     data_cls: str = ""
     data: dict = field(default_factory=dict)
@@ -74,6 +78,9 @@ class ExperimentConfig:
     # accept pytorch-lightning checkpoint callback parameters
     # see https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.ModelCheckpoint.html#modelcheckpoint
     checkpoint: dict = field(default_factory=dict)
+    
+    # Wandb configuration
+    wandb: dict = field(default_factory=dict)  # Custom wandb settings (dir, project, entity, etc.)
 
     input_length: int = 0 # The size of the input data, used in lr_scheduler
 
@@ -119,7 +126,10 @@ def load_config(
                 scfg.timestamp = datetime.now().strftime("@%Y%m%d-%H%M%S")
     # make directories
     scfg.trial_name += scfg.timestamp
-    scfg.exp_dir = os.path.join(scfg.exp_root_dir, scfg.name)
+    
+    # Use custom output directory if specified
+    root_dir = scfg.custom_output_dir if scfg.custom_output_dir else scfg.exp_root_dir
+    scfg.exp_dir = os.path.join(root_dir, scfg.name)
     scfg.trial_dir = os.path.join(scfg.exp_dir, scfg.trial_name)
 
     if makedirs:

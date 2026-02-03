@@ -74,6 +74,7 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         self._resumed: bool = resumed
         self._resumed_eval: bool = False
         self._resumed_eval_status: dict = {"global_step": 0, "current_epoch": 0}
+        self._wandb_run_id: Optional[str] = None  # Store wandb run ID for resuming
 
         self.configure()
         if self.cfg.weights is not None:
@@ -124,6 +125,26 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         self._resumed_eval = True
         self._resumed_eval_status["current_epoch"] = current_epoch
         self._resumed_eval_status["global_step"] = global_step
+
+    def set_wandb_run_id(self, run_id: Optional[str]):
+        """Set wandb run ID for resuming"""
+        self._wandb_run_id = run_id
+    
+    def get_wandb_run_id(self) -> Optional[str]:
+        """Get wandb run ID"""
+        return self._wandb_run_id
+
+    def on_save_checkpoint(self, checkpoint):
+        """Save wandb run ID to checkpoint for resuming"""
+        if self._wandb_logger is not None and hasattr(self._wandb_logger.experiment, 'id'):
+            checkpoint['wandb_run_id'] = self._wandb_logger.experiment.id
+            spuv.info(f"Saved wandb run ID to checkpoint: {checkpoint['wandb_run_id']}")
+    
+    def on_load_checkpoint(self, checkpoint):
+        """Load wandb run ID from checkpoint"""
+        if 'wandb_run_id' in checkpoint:
+            self._wandb_run_id = checkpoint['wandb_run_id']
+            spuv.info(f"Loaded wandb run ID from checkpoint: {self._wandb_run_id}")
 
     @property
     def resumed(self):
