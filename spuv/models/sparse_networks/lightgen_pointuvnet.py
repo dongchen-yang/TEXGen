@@ -210,7 +210,9 @@ class LightGenPointUVNet(PointUVNet):
         if self.cfg.skip_input:
             if self.cfg.skip_type == "baked_texture":
                 # Skip connection with baked texture (material-based residual)
-                return x_output + baked_weights * baked_texture, addition_info
+                # Only use albedo channels (first 3) for skip to match output channels
+                baked_albedo = baked_texture[:, :3, :, :]  # [B, 3, H, W]
+                return x_output + baked_weights * baked_albedo, addition_info
             elif self.cfg.skip_type == "noise_input":
                 # Skip connection with noisy input
                 return x_output + skip_x, addition_info
@@ -225,7 +227,9 @@ class LightGenPointUVNet(PointUVNet):
                 output_scale_map, skip_scale_map = skip_map.chunk(2, dim=1)
 
                 x1 = (1 - output_scale_map) * x_output
-                x2 = skip_scale_map * (x0_scale * baked_texture + input_scale * skip_x)
+                # Only use albedo channels (first 3) for skip to match output channels
+                baked_albedo = baked_texture[:, :3, :, :]  # [B, 3, H, W]
+                x2 = skip_scale_map * (x0_scale * baked_albedo + input_scale * skip_x)
                 x_output = x1 + x2
 
                 addition_info["skip_scale_map"] = skip_scale_map
