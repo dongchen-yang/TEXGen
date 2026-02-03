@@ -318,15 +318,13 @@ class LightGenSystem(TEXGenDiffusion):
                 pred_img = torch.clamp(pred_img, 0, 1)
                 gt_img = torch.clamp(gt_img, 0, 1)
                 
-                # Get input albedo condition (baked_texture from UV space)
+                # Get input albedo condition from baked_texture (first 3 channels only)
                 albedo_img = None
                 if 'albedo_map' in batch and batch['albedo_map'] is not None:
+                    # Use albedo_map directly (already separate in batch)
                     albedo = batch['albedo_map'][0:1]  # [1, 3, H, W]
-                    # Denormalize if needed
-                    if self.cfg.data_normalization:
-                        albedo_vis = (albedo * 0.5 + 0.5) * diffusion_data['mask_map'][0:1]
-                    else:
-                        albedo_vis = albedo * diffusion_data['mask_map'][0:1]
+                    # Albedo is already in [0, 1] range, just apply mask
+                    albedo_vis = albedo * diffusion_data['mask_map'][0:1]
                     albedo_vis = torch.clamp(albedo_vis, 0, 1)
                     albedo_img = albedo_vis[0].cpu().permute(1, 2, 0).detach().numpy()
                 
