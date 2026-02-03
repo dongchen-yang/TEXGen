@@ -36,7 +36,7 @@ data:
   uv_height: 256
   uv_width: 256
   batch_size: 32
-  eval_batch_size: 1  # Must be 1 - test_step saves individual images by scene_id
+  eval_batch_size: 16  # Batched validation for faster processing
   num_workers: 8  # 8 workers is typically sufficient
 
 # System configuration

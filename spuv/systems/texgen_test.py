@@ -271,31 +271,10 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         render_images = {}
         background_color = self.render_background_color 
 
-        assert len(batch["scene_id"]) == 1
-        save_str = batch["scene_id"][0]
+        # Get batch size (support batched validation)
+        batch_size = len(batch["scene_id"])
 
-        # save prediction to png file
-        value = texture_map_outputs["pred_x0"]
-        if self.cfg.data_normalization:
-            img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"]
-        else:
-            img = value * texture_map_outputs["mask_map"]
-        # Important to flip the uv map for possible meshlab loading, for rendering using NvDiffRasterizer, do not flip!
-        flip_img = torch.flip(img, dims=[2])
-
-        img_format = [{
-            "type": "rgb",
-            "img": rearrange(flip_img, "B C H W-> (B H) W C"),
-            "kwargs": {"data_format": "HWC"},
-        }]
-
-        # Save to disk only (not logged to WandB - will be logged in preview below)
-        self.save_image_grid(
-            f"it{self.true_global_step}-test/{save_str}.png",
-            img_format,
-        )
-
-        # Compute and log validation metrics
+        # Compute and log validation metrics (batched computation for efficiency)
         pred_x0 = texture_map_outputs["pred_x0"]
         gt_x0 = texture_map_outputs["gt_x0"]
         mask_map = texture_map_outputs["mask_map"]
@@ -308,7 +287,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             pred_img = pred_x0 * mask_map
             gt_img = gt_x0 * mask_map
         
-        # Compute MSE and PSNR on UV space
+        # Compute MSE and PSNR on UV space (batched)
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)
         
@@ -316,109 +295,131 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         self.log('val/mse', mse, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.log('val/psnr', psnr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         
-        # save preview
-        # Create a composite visualization: [Input | Prediction | Ground Truth] for each object
-        
-        # Prepare prediction
-        pred_value = texture_map_outputs["pred_x0"]
-        if self.cfg.data_normalization:
-            pred_img = (pred_value * 0.5 + 0.5) * texture_map_outputs["mask_map"]
-        else:
-            pred_img = pred_value * texture_map_outputs["mask_map"]
-        pred_flip = torch.flip(pred_img, dims=[2])
-        pred_vis = rearrange(pred_flip, "B C H W-> (B H) W C")
-        
-        # Prepare ground truth
-        gt_value = texture_map_outputs["gt_x0"]
-        if self.cfg.data_normalization:
-            gt_img = (gt_value * 0.5 + 0.5) * texture_map_outputs["mask_map"]
-        else:
-            gt_img = gt_value * texture_map_outputs["mask_map"]
-        gt_flip = torch.flip(gt_img, dims=[2])
-        gt_vis = rearrange(gt_flip, "B C H W-> (B H) W C")
-        
-        # Prepare input condition (thumbnail)
+        # Loop through batch to save individual images and create visualizations
         has_thumbnail = 'thumbnail' in batch and batch['thumbnail'] is not None
-        if has_thumbnail:
-            thumbnail = batch['thumbnail']  # [B, 1, H, W, 3]
-            if thumbnail.dim() == 5:
-                thumbnail_img = thumbnail[0, 0]  # [H, W, 3]
-            else:
-                thumbnail_img = thumbnail[0]  # [H, W, 3]
+        
+        for b_idx in range(batch_size):
+            save_str = batch["scene_id"][b_idx]
             
-            # Resize thumbnail to match UV map height for side-by-side display
-            # UV maps are typically 512x512 or 1024x1024, thumbnails are usually 256x256
-            H_uv, W_uv = pred_vis.shape[0], pred_vis.shape[1]
-            H_thumb, W_thumb = thumbnail_img.shape[0], thumbnail_img.shape[1]
-            
-            # Pad thumbnail to match UV map height if needed
-            if H_thumb < H_uv:
-                pad_top = (H_uv - H_thumb) // 2
-                pad_bottom = H_uv - H_thumb - pad_top
-                thumbnail_img = torch.nn.functional.pad(
-                    thumbnail_img.permute(2, 0, 1),  # [3, H, W]
-                    (0, 0, pad_top, pad_bottom),
-                    mode='constant',
-                    value=0
-                ).permute(1, 2, 0)  # [H, W, 3]
-            elif H_thumb > H_uv:
-                # Crop if thumbnail is larger
-                start = (H_thumb - H_uv) // 2
-                thumbnail_img = thumbnail_img[start:start+H_uv]
-        
-        # Create composite image: [Input | Prediction | Ground Truth]
-        if has_thumbnail:
-            composite_imgs = [
-                {"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}},
-                {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
-                {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
-            ]
-        else:
-            # If no thumbnail, just show [Prediction | Ground Truth]
-            composite_imgs = [
-                {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
-                {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
-            ]
-        
-        # Log composite image with object identifier
-        object_id = batch.get("scene_id", [f"obj_{batch_idx}"])[0]
-        self.save_image_grid(
-            f"it{self.true_global_step}-test/preview/composite_{self.global_rank}_{batch_idx}.jpg",
-            composite_imgs,
-            name=f"test/validation/{object_id}",
-            step=self.true_global_step,
-        )
-        
-        # Also save individual images to disk (but not to WandB) for reference
-        for key, suffix in [("pred_x0", "prediction"), ("gt_x0", "ground_truth")]:
-            value = texture_map_outputs[key]
+            # save prediction to png file
+            value = texture_map_outputs["pred_x0"][b_idx:b_idx+1]
             if self.cfg.data_normalization:
-                img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"]
+                img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
             else:
-                img = value * texture_map_outputs["mask_map"]
+                img = value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            # Important to flip the uv map for possible meshlab loading, for rendering using NvDiffRasterizer, do not flip!
             flip_img = torch.flip(img, dims=[2])
+
             img_format = [{
                 "type": "rgb",
                 "img": rearrange(flip_img, "B C H W-> (B H) W C"),
                 "kwargs": {"data_format": "HWC"},
             }]
+
+            # Save to disk only (not logged to WandB - will be logged in preview below)
             self.save_image_grid(
-                f"it{self.true_global_step}-test/preview/{suffix}_{self.global_rank}_{batch_idx}.jpg",
+                f"it{self.true_global_step}-test/{save_str}.png",
                 img_format,
             )
-        
-        if has_thumbnail:
+            
+            # Create a composite visualization: [Input | Prediction | Ground Truth] for each object
+            
+            # Prepare prediction
+            pred_value = texture_map_outputs["pred_x0"][b_idx:b_idx+1]
+            if self.cfg.data_normalization:
+                pred_img_vis = (pred_value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            else:
+                pred_img_vis = pred_value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            pred_flip = torch.flip(pred_img_vis, dims=[2])
+            pred_vis = rearrange(pred_flip, "B C H W-> (B H) W C")
+            
+            # Prepare ground truth
+            gt_value = texture_map_outputs["gt_x0"][b_idx:b_idx+1]
+            if self.cfg.data_normalization:
+                gt_img_vis = (gt_value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            else:
+                gt_img_vis = gt_value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            gt_flip = torch.flip(gt_img_vis, dims=[2])
+            gt_vis = rearrange(gt_flip, "B C H W-> (B H) W C")
+            
+            # Prepare input condition (thumbnail)
+            if has_thumbnail:
+                thumbnail = batch['thumbnail'][b_idx:b_idx+1]  # [1, 1, H, W, 3]
+                if thumbnail.dim() == 5:
+                    thumbnail_img = thumbnail[0, 0]  # [H, W, 3]
+                else:
+                    thumbnail_img = thumbnail[0]  # [H, W, 3]
+                
+                # Resize thumbnail to match UV map height for side-by-side display
+                # UV maps are typically 512x512 or 1024x1024, thumbnails are usually 256x256
+                H_uv, W_uv = pred_vis.shape[0], pred_vis.shape[1]
+                H_thumb, W_thumb = thumbnail_img.shape[0], thumbnail_img.shape[1]
+                
+                # Pad thumbnail to match UV map height if needed
+                if H_thumb < H_uv:
+                    pad_top = (H_uv - H_thumb) // 2
+                    pad_bottom = H_uv - H_thumb - pad_top
+                    thumbnail_img = torch.nn.functional.pad(
+                        thumbnail_img.permute(2, 0, 1),  # [3, H, W]
+                        (0, 0, pad_top, pad_bottom),
+                        mode='constant',
+                        value=0
+                    ).permute(1, 2, 0)  # [H, W, 3]
+                elif H_thumb > H_uv:
+                    # Crop if thumbnail is larger
+                    start = (H_thumb - H_uv) // 2
+                    thumbnail_img = thumbnail_img[start:start+H_uv]
+            
+            # Create composite image: [Input | Prediction | Ground Truth]
+            if has_thumbnail:
+                composite_imgs = [
+                    {"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}},
+                    {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
+                    {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
+                ]
+            else:
+                # If no thumbnail, just show [Prediction | Ground Truth]
+                composite_imgs = [
+                    {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
+                    {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
+                ]
+            
+            # Log composite image with object identifier
+            object_id = save_str
             self.save_image_grid(
-                f"it{self.true_global_step}-test/preview/thumbnail_{self.global_rank}_{batch_idx}.jpg",
-                [{"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}}],
+                f"it{self.true_global_step}-test/preview/composite_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
+                composite_imgs,
+                name=f"test/validation/{object_id}",
+                step=self.true_global_step,
             )
+            
+            # Also save individual images to disk (but not to WandB) for reference
+            for key, suffix in [("pred_x0", "prediction"), ("gt_x0", "ground_truth")]:
+                value = texture_map_outputs[key][b_idx:b_idx+1]
+                if self.cfg.data_normalization:
+                    img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+                else:
+                    img = value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+                flip_img = torch.flip(img, dims=[2])
+                img_format = [{
+                    "type": "rgb",
+                    "img": rearrange(flip_img, "B C H W-> (B H) W C"),
+                    "kwargs": {"data_format": "HWC"},
+                }]
+                self.save_image_grid(
+                    f"it{self.true_global_step}-test/preview/{suffix}_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
+                    img_format,
+                )
+            
+            if has_thumbnail:
+                self.save_image_grid(
+                    f"it{self.true_global_step}-test/preview/thumbnail_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
+                    [{"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}}],
+                )
         
         # Explicit cleanup of large tensors to prevent memory leaks
         del texture_map_outputs
         del pred_x0, gt_x0, mask_map, pred_img, gt_img
-        del pred_vis, gt_vis, pred_value, gt_value, pred_flip, gt_flip
-        if has_thumbnail:
-            del thumbnail, thumbnail_img
         
         # 3D rendering disabled - only save UV maps for faster validation
             # Uncomment below if you need 3D rendered views
