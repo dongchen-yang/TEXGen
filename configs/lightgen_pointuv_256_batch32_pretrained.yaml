@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256res_batch32"
+tag: "pointuv_256res_batch32_pretrained"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -63,6 +63,14 @@ system:
 
   cond_rgb_perturb: false
 
+  # ============================================================================
+  # PRETRAINED WEIGHTS - Load TEXGen v2 (transfer learning)
+  # Only layers with matching dimensions will be loaded; incompatible layers
+  # will be randomly initialized automatically.
+  # ============================================================================
+  weights: "assets/checkpoints/texgen_v2.ckpt"
+  # ============================================================================
+
   # Image tokenizer (for CLIP conditioning)
   image_tokenizer_cls: spuv.models.tokenizers.clip.ClipTokenizer
   image_tokenizer:
@@ -116,11 +124,11 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer
+  # Optimizer (adjusted for transfer learning with pretrained weights)
   optimizer:
     name: AdamW
     args:
-      lr: 5e-4
+      lr: 5e-4  # Lower LR for fine-tuning pretrained weights
       betas: [0.9, 0.999]
       weight_decay: 0.01
 
@@ -158,8 +166,7 @@ wandb:
   project: "LightGen"  # Wandb project name
   # entity: "your_team_name"  # Optional: your wandb team/username
   # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
-  tags: ["baseline", "from_scratch"]
-  notes: "Baseline training from scratch - 256x256 resolution, batch size 32"
-
+  tags: ["pretrained", "transfer_learning"]
+  notes: "Transfer learning from TEXGen v2 - 256x256 resolution, batch size 32"
 
 

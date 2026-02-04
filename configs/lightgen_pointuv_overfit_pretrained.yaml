@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256_overfit_baseline"
+tag: "pointuv_256_overfit_pretrained"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -7,7 +7,7 @@ seed: 42
 auto_resume: true  # Enable automatic resumption from latest checkpoint
 
 # Custom output directory (optional) - overrides exp_root_dir for all outputs
-# custom_output_dir: "/scratch/dya78/lightgen/overfit_outputs"
+# custom_output_dir: "/scratch/dya78/lightgen/overfit_pretrained_outputs"
 
 # Data configuration - Single sample for overfitting test
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
@@ -26,7 +26,6 @@ data:
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
   # Single sample for overfitting (using first sample from filtered dataset)
-  # Using JSON file for reliable parsing
   train_indices: "configs/data_splits_overfit_single.json"
   val_indices: "configs/data_splits_overfit_single.json"
   test_indices: "configs/data_splits_overfit_single.json"
@@ -60,6 +59,14 @@ system:
 
   cond_rgb_perturb: false
 
+  # ============================================================================
+  # PRETRAINED WEIGHTS - Load TEXGen v2 (transfer learning)
+  # Only layers with matching dimensions will be loaded; incompatible layers
+  # will be randomly initialized automatically.
+  # ============================================================================
+  weights: "assets/checkpoints/texgen_v2.ckpt"
+  # ============================================================================
+
   # Image tokenizer
   image_tokenizer_cls: spuv.models.tokenizers.clip.ClipTokenizer
   image_tokenizer:
@@ -73,7 +80,7 @@ system:
     in_channels: 12
     out_channels: 3
     
-    # Full architecture (matches TEXGen for fair comparison with pretrained weights)
+    # Full architecture (matches TEXGen for proper weight transfer)
     num_layers: [1, 1, 1, 1, 1]
     point_block_num: [1, 1, 2, 4, 6]
     block_out_channels: [32, 256, 1024, 1024, 2048]
@@ -93,8 +100,8 @@ system:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_dark_region: 0.0  # Set to >0 to enable dark region loss (e.g., 0.5)
-      emissive_threshold: 0.001  # Threshold for detecting dark regions
+      lambda_dark_region: 0.0  # Set to >0 to enable dark region loss
+      emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0
@@ -131,19 +138,18 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  # dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_baseline/"  # Custom checkpoint directory
+  # dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_pretrained/"
   save_last: false  # Disabled for speed during overfitting test
   save_top_k: 0  # No checkpoints saved
   every_n_epochs: 10
   monitor: "val/psnr"
   mode: "max"
-  save_on_train_epoch_end: false  # Wait for validation before saving
+  save_on_train_epoch_end: false
 
 # Wandb configuration (use --wandb flag to enable)
 wandb:
-  project: "LightGen"  # Wandb project name
-  # entity: "your_team_name"  # Optional: your wandb team/username
-  # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
-  tags: ["overfit"]  # Tags for organization
-  notes: "Overfitting test on single sample - baseline configuration"
-
+  project: "LightGen"
+  # entity: "your_team_name"
+  # dir: "/scratch/dya78/lightgen/wandb_logs"
+  tags: ["overfit", "pretrained"]
+  notes: "Overfitting test on single sample - Transfer learning from TEXGen v2 (middle layers)"

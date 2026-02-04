@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torchvision.transforms import v2 as transform
+import torchvision.transforms.functional as TF
 from PIL import Image
 import imageio
 import cv2
@@ -206,8 +207,6 @@ class LightGenDataset(Dataset):
         thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
         thumbnail = None
         if os.path.exists(thumbnail_path):
-            from PIL import Image
-            import torchvision.transforms.functional as TF
             with Image.open(thumbnail_path) as thumbnail_pil:
                 thumbnail_img = thumbnail_pil.convert('RGB')
                 # Resize to fixed size (224x224) for batching - CLIP will resize anyway
