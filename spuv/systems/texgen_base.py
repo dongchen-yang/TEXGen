@@ -415,6 +415,10 @@ class TEXGenDiffusion(BaseSystem):
             pred_img = pred_x0 * mask_map
             gt_img = gt_x0 * mask_map
         
+        # Clamp to valid range [0, 1] before computing metrics
+        pred_img = torch.clamp(pred_img, 0, 1)
+        gt_img = torch.clamp(gt_img, 0, 1)
+        
         # Compute MSE and PSNR on UV space
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)

@@ -9,12 +9,12 @@ auto_resume: true  # Enable automatic resumption from latest checkpoint in check
 # Custom output directory (optional) - overrides exp_root_dir for all outputs
 # custom_output_dir: "/scratch/dya78/lightgen/custom_outputs"
 
-# Data configuration - UNFILTERED dataset with 824K+ training samples
-# Uses ALL successful samples for training while keeping same val/test sets
+# Data configuration - ALL EMISSIVE samples (70K+ training samples)
+# Uses ALL emissive objects from processed_data/emissive_dicts while keeping same val/test sets
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  # IMPORTANT: Using unfiltered data from network-mounted location
-  # This contains the full 824K+ successful samples
+  # IMPORTANT: Using full dataset from network-mounted location
+  # This contains all the emissive samples identified in processed_data/emissive_dicts
   data_root: "/localhome/dya78/code/lightgen/data/baked_uv"
   parquet_file: "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
   scene_list: ""
@@ -28,13 +28,13 @@ data:
   eval_sup_views: 4
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
-  # Train/Val/Test splits - unfiltered training with same val/test sets
-  # Train: 824,627 samples (ALL except val/test)
-  # Val:   115 samples (same as filtered split)
-  # Test:  116 samples (same as filtered split)
-  train_indices: "../data_processing/annotation/data_splits_unfiltered_train.json"
-  val_indices: "../data_processing/annotation/data_splits_unfiltered_train.json"
-  test_indices: "../data_processing/annotation/data_splits_unfiltered_train.json"
+  # Train/Val/Test splits - all emissive samples with same val/test sets
+  # Train: 70,331 samples (ALL emissive objects except val/test)
+  # Val:   108 samples (same as filtered split, emissive only)
+  # Test:  114 samples (same as filtered split, emissive only)
+  train_indices: "../data_processing/annotation/data_splits_emissive.json"
+  val_indices: "../data_processing/annotation/data_splits_emissive.json"
+  test_indices: "../data_processing/annotation/data_splits_emissive.json"
 
   # Lower resolution settings for faster training and larger batch size
   height: 256
@@ -135,16 +135,15 @@ system:
     name: CosineAnnealingLR
     interval: step
     args:
-      T_max: 500000  # Adjusted for 5000 epochs (~625k steps total)
+      T_max: 500000  # Adjusted for longer training (~625k steps total)
       eta_min: 1e-6
 
 # Trainer configuration
-# Note: With 824K+ samples, each epoch is MUCH longer than with filtered data
-# At batch_size=32, one epoch = 824627/32 ≈ 25,770 steps
-# You may want to reduce max_epochs or increase check_val_every_n_epoch
+# Note: With 70K+ samples, each epoch is ~2,200 steps at batch_size=32
+# This is much more manageable than the 824K unfiltered dataset
 trainer:
-  max_epochs: 100  # Reduced from 5000 - one epoch on 824K samples is already significant
-  check_val_every_n_epoch: 5  # Validate more frequently since epochs are longer
+  max_epochs: 500  # More epochs since dataset is more focused on emissive objects
+  check_val_every_n_epoch: 10  # Validate every 10 epochs
   num_sanity_val_steps: 2
   precision: bf16-mixed
   gradient_clip_val: 1.0
@@ -154,7 +153,7 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: "/scratch/dya78/lightgen/TEXGen/output/"
+  dirpath: "/scratch/dya78/lightgen/TEXGen/output_unfiltered/"
   save_last: true
   save_top_k: 5
   every_n_epochs: 1
@@ -167,7 +166,7 @@ wandb:
   project: "LightGen"  # Wandb project name
   # entity: "your_team_name"  # Optional: your wandb team/username
   # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
-  tags: ["unfiltered", "full_dataset", "824k_samples"]
-  notes: "Training on UNFILTERED data (824K+ samples) with same val/test sets - 256x256 resolution, batch size 32"
+  tags: ["emissive_only", "70k_samples", "full_emissive_dataset"]
+  notes: "Training on ALL emissive samples (70K+) with same val/test sets - 256x256 resolution, batch size 32"
 
 
