@@ -13,10 +13,10 @@ auto_resume: true  # Enable automatic resumption from latest checkpoint in check
 # Uses ALL emissive objects from processed_data/emissive_dicts while keeping same val/test sets
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  # IMPORTANT: Using full dataset from network-mounted location
+  # IMPORTANT: Using full dataset
   # This contains all the emissive samples identified in processed_data/emissive_dicts
-  data_root: "/localhome/dya78/code/lightgen/data/baked_uv"
-  parquet_file: "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
+  data_root: "../data/baked_uv"
+  parquet_file: "../data/baked_uv/df_SomgProc_final.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
