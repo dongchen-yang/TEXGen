@@ -12,8 +12,8 @@ auto_resume: true  # Enable automatic resumption from latest checkpoint in check
 # Data configuration - Full annotated dataset with 256x256 resolution
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  data_root: "../data/baked_uv_local"
-  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  data_root: "../data/baked_uv_local_subset"
+  parquet_file: "../data/baked_uv_local_subset/df_SomgProc_filtered.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -26,9 +26,9 @@ data:
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
   # Train/Val/Test splits from annotated emissive data (filtered for local dataset)
-  train_indices: "../data/baked_uv_local/data_splits_filtered.json"
-  val_indices: "../data/baked_uv_local/data_splits_filtered.json"
-  test_indices: "../data/baked_uv_local/data_splits_filtered.json"
+  train_indices: "../data/baked_uv_local_subset/data_splits_filtered.json"
+  val_indices: "../data/baked_uv_local_subset/data_splits_filtered.json"
+  test_indices: "../data/baked_uv_local_subset/data_splits_filtered.json"
 
   # Lower resolution settings for faster training and larger batch size
   height: 256

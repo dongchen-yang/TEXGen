@@ -14,8 +14,8 @@ custom_output_dir: "outputs/overfit_resume_test_subset"  # For local testing
 # Data configuration - Single sample for overfitting test (using subsest - note the typo in dir name)
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  data_root: "../data/baked_uv_local_subsest"
-  parquet_file: "../data/baked_uv_local_subsest/df_SomgProc_filtered.parquet"
+  data_root: "../data/baked_uv_local_subset"
+  parquet_file: "../data/baked_uv_local_subset/df_SomgProc_filtered.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -29,9 +29,9 @@ data:
 
   # Single sample for overfitting (using overfit_split_single.json)
   # Using JSON file for reliable parsing
-  train_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
-  val_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
-  test_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
+  train_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
+  val_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
+  test_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
 
   height: 256
   width: 256

@@ -12,8 +12,8 @@ auto_resume: true  # Enable automatic resumption from latest checkpoint
 # Data configuration - Single sample for overfitting test
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  data_root: "../data/baked_uv_local"
-  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  data_root: "../data/baked_uv_local_subset"
+  parquet_file: "../data/baked_uv_local_subset/df_SomgProc_filtered.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
