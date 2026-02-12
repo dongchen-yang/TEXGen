@@ -236,67 +236,10 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
                 f"Saving directory not set for the system, visualization results will not be saved"
             )
         
-        # CRITICAL: Verify checkpoint was actually loaded when resuming
-        if self._resumed:
-            current_epoch = self.current_epoch
-            current_step = self.global_step
-            spuv.info(f"=" * 80)
-            spuv.info(f"CHECKPOINT RESUME VERIFICATION:")
-            spuv.info(f"  Current epoch: {current_epoch}")
-            spuv.info(f"  Current global_step: {current_step}")
-            
-            if current_step == 0 and current_epoch == 0:
-                spuv.error(
-                    "=" * 80 + "\n" +
-                    "CRITICAL ERROR: Checkpoint resume FAILED!\n" +
-                    "global_step and epoch are both 0, but resumed=True.\n" +
-                    "This means PyTorch Lightning did not restore the checkpoint state.\n" +
-                    "Training will start from scratch instead of resuming!\n" +
-                    "=" * 80
-                )
-            else:
-                spuv.info(f"  ✓ Checkpoint state successfully restored!")
-                spuv.info(f"  Logging will continue from step {current_step}")
-            
-            spuv.info(f"=" * 80)
-        
-        # CRITICAL: Restore scheduler state when resuming training
-        if self._resumed and hasattr(self, 'lr_schedulers'):
-            schedulers = self.lr_schedulers()
-            if not isinstance(schedulers, list):
-                schedulers = [schedulers]
-            
-            # Check if we have explicitly saved scheduler states
-            if hasattr(self, '_saved_scheduler_states') and self._saved_scheduler_states:
-                spuv.info("Restoring scheduler states from explicit checkpoint save...")
-                for i, (scheduler, saved_state) in enumerate(zip(schedulers, self._saved_scheduler_states)):
-                    # Restore scheduler state
-                    scheduler.load_state_dict(saved_state['state_dict'])
-                    if saved_state['last_epoch'] is not None:
-                        scheduler.last_epoch = saved_state['last_epoch']
-                    if saved_state['_last_lr'] is not None:
-                        scheduler._last_lr = saved_state['_last_lr']
-                    spuv.info(f"Restored scheduler {i}: last_epoch={scheduler.last_epoch}, last_lr={scheduler._last_lr}")
-            
-            # Verify and correct scheduler state
-            for i, scheduler in enumerate(schedulers):
-                if hasattr(scheduler, 'last_epoch'):
-                    expected_step = self.global_step
-                    actual_step = scheduler.last_epoch
-                    
-                    # Allow small mismatch due to logging intervals
-                    if abs(expected_step - actual_step) > 10:
-                        spuv.warn(
-                            f"Scheduler {i} last_epoch ({actual_step}) does not match global_step ({expected_step}). "
-                            f"This may cause LR discontinuities. Correcting scheduler state..."
-                        )
-                        # Fix the scheduler's last_epoch to match global_step
-                        scheduler.last_epoch = expected_step
-                        # Step the scheduler to recalculate LR
-                        scheduler.step()
-                    
-                    current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 'unknown'
-                    spuv.info(f"Scheduler {i} final state: step={scheduler.last_epoch}, LR={current_lr}")
+        # NOTE: Do NOT restore scheduler state here!
+        # on_fit_start() runs BEFORE Lightning restores the checkpoint state,
+        # so self.global_step is still 0 at this point. Scheduler restoration
+        # is handled in on_train_start() where global_step is correctly set.
         
         # Set memory baseline after model is loaded and initialized
         from spuv.utils.memory_tracker import log_memory, set_baseline
@@ -362,6 +305,71 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     def validation_step(self, batch, batch_idx):
         raise NotImplementedError
 
+    def on_train_start(self):
+        """Called at the start of training, AFTER checkpoint is loaded."""
+        # CRITICAL: Verify checkpoint was actually loaded when resuming
+        # This is called AFTER PyTorch Lightning loads the checkpoint
+        if self._resumed:
+            current_epoch = self.current_epoch
+            current_step = self.global_step
+            spuv.info(f"=" * 80)
+            spuv.info(f"CHECKPOINT RESUME VERIFICATION:")
+            spuv.info(f"  Current epoch: {current_epoch}")
+            spuv.info(f"  Current global_step: {current_step}")
+            
+            if current_step == 0 and current_epoch == 0:
+                spuv.warn(
+                    "=" * 80 + "\n" +
+                    "CRITICAL ERROR: Checkpoint resume FAILED!\n" +
+                    "global_step and epoch are both 0, but resumed=True.\n" +
+                    "This means PyTorch Lightning did not restore the checkpoint state.\n" +
+                    "Training will start from scratch instead of resuming!\n" +
+                    "=" * 80
+                )
+            else:
+                spuv.info(f"  ✓ Checkpoint state successfully restored!")
+                spuv.info(f"  Logging will continue from step {current_step}")
+            
+            spuv.info(f"=" * 80)
+        
+        # CRITICAL: Restore scheduler state when resuming training
+        if self._resumed and hasattr(self, 'lr_schedulers'):
+            schedulers = self.lr_schedulers()
+            if not isinstance(schedulers, list):
+                schedulers = [schedulers]
+            
+            # Check if we have explicitly saved scheduler states
+            if hasattr(self, '_saved_scheduler_states') and self._saved_scheduler_states:
+                spuv.info("Restoring scheduler states from explicit checkpoint save...")
+                for i, (scheduler, saved_state) in enumerate(zip(schedulers, self._saved_scheduler_states)):
+                    # Restore scheduler state
+                    scheduler.load_state_dict(saved_state['state_dict'])
+                    if saved_state['last_epoch'] is not None:
+                        scheduler.last_epoch = saved_state['last_epoch']
+                    if saved_state['_last_lr'] is not None:
+                        scheduler._last_lr = saved_state['_last_lr']
+                    spuv.info(f"Restored scheduler {i}: last_epoch={scheduler.last_epoch}, last_lr={scheduler._last_lr}")
+            
+            # Verify and correct scheduler state
+            for i, scheduler in enumerate(schedulers):
+                if hasattr(scheduler, 'last_epoch'):
+                    expected_step = self.global_step
+                    actual_step = scheduler.last_epoch
+                    
+                    # Allow small mismatch due to logging intervals
+                    if abs(expected_step - actual_step) > 10:
+                        spuv.warn(
+                            f"Scheduler {i} last_epoch ({actual_step}) does not match global_step ({expected_step}). "
+                            f"This may cause LR discontinuities. Correcting scheduler state..."
+                        )
+                        # Fix the scheduler's last_epoch to match global_step
+                        scheduler.last_epoch = expected_step
+                        # Step the scheduler to recalculate LR
+                        scheduler.step()
+                    
+                    current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 'unknown'
+                    spuv.info(f"Scheduler {i} final state: step={scheduler.last_epoch}, LR={current_lr}")
+    
     def on_train_epoch_start(self):
         """Called at the start of each training epoch."""
         from spuv.utils.memory_tracker import log_memory
@@ -374,22 +382,6 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         import gc
         if hasattr(self, 'current_epoch'):
             log_memory(f"epoch_end_before_cleanup (epoch={self.current_epoch})", force=True)
-            
-            # Log epoch-aggregated training metrics to wandb with epoch as x-axis
-            if self._wandb_logger is not None and hasattr(self._wandb_logger, 'experiment'):
-                metrics = self.trainer.callback_metrics
-                epoch_metrics = {}
-                
-                for key, value in metrics.items():
-                    # Find metrics that end with '_epoch' (aggregated epoch metrics)
-                    if key.endswith('_epoch') and 'train/' in key:
-                        # Create cleaner metric name for wandb
-                        clean_key = key.replace('_epoch', '_vs_epoch')
-                        epoch_metrics[clean_key] = value.item() if hasattr(value, 'item') else value
-                
-                if epoch_metrics:
-                    # Log with current_epoch as the step (x-axis)
-                    self._wandb_logger.experiment.log(epoch_metrics, step=self.current_epoch)
             
             # Only do expensive cleanup every 10 epochs to avoid slowdown
             if self.current_epoch % 10 == 0:

@@ -138,9 +138,9 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  # dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_pretrained/"
-  save_last: false  # Disabled for speed during overfitting test
-  save_top_k: 0  # No checkpoints saved
+  dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_pretrained/"
+  save_last: true
+  save_top_k: 5
   every_n_epochs: 10
   monitor: "val/psnr"
   mode: "max"

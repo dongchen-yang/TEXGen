@@ -390,7 +390,7 @@ class LightGenSystem(TEXGenDiffusion):
                 self._wandb_logger.log_image(
                     key="train/predictions",
                     images=images,
-                    step=self.global_step
+                    step=self.current_epoch
                 )
                 # Aggressive cleanup of all visualization tensors
                 del images, pred_x0, pred_img, gt_img

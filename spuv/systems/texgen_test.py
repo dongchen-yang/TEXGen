@@ -253,30 +253,11 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             self._ema_switched = False
     
     def on_validation_epoch_end(self):
-        """Restore training weights and log epoch metrics with correct x-axis"""
+        """Restore training weights once at the end of validation"""
         if self._ema_switched:
             spuv.info("Validation with EMA weights: Restoring training weights")
             self.backbone_ema.restore(self.backbone.parameters())
             self._ema_switched = False
-        
-        # Log epoch-aggregated metrics to wandb with epoch as x-axis
-        # PyTorch Lightning logs epoch metrics with global_step by default, which is confusing
-        if self._wandb_logger is not None and hasattr(self._wandb_logger, 'experiment'):
-            # Get the aggregated epoch metrics from the logger
-            metrics = self.trainer.callback_metrics
-            epoch_metrics = {}
-            
-            for key, value in metrics.items():
-                # Find metrics that end with '_epoch' (these are the aggregated epoch metrics)
-                if key.endswith('_epoch') and 'val/' in key:
-                    # Remove '_epoch' suffix for cleaner wandb metric name
-                    clean_key = key.replace('_epoch', '_vs_epoch')
-                    epoch_metrics[clean_key] = value.item() if hasattr(value, 'item') else value
-            
-            if epoch_metrics:
-                # Log with current_epoch as the step (x-axis)
-                self._wandb_logger.experiment.log(epoch_metrics, step=self.current_epoch)
-                spuv.debug(f"Logged epoch metrics to wandb at epoch {self.current_epoch}: {list(epoch_metrics.keys())}")
     
     def validation_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
@@ -323,9 +304,11 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)
         
-        # Log metrics
-        self.log('val/mse', mse, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val/psnr', psnr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        # Log metrics (aggregated per epoch only - on_step=True during validation
+        # causes trainer/global_step to be logged with the validation batch index
+        # instead of the actual training step, which corrupts the wandb x-axis)
+        self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         # Loop through batch to save individual images and create visualizations
         has_thumbnail = 'thumbnail' in batch and batch['thumbnail'] is not None
@@ -422,7 +405,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 f"it{self.true_global_step}-test/preview/composite_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
                 composite_imgs,
                 name=f"test/validation/{object_id}",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
             
             # Also save individual images to disk (but not to WandB) for reference
@@ -499,7 +482,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 f"it{self.true_global_step}-test/preview/render_{key}_{self.global_rank}_{batch_idx}.jpg",
                 img_format,
                 name=f"test_step_output_{self.global_rank}_{batch_idx}",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
 
             render_images[key] = torch.clamp(rearrange(render_out, "B V H W C -> (B V) C H W"), min=0, max=1)

@@ -111,7 +111,7 @@ class SaverMixin:
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
             self._wandb_logger.log_image(
-                key=name, images=[self.get_save_path(filename)], step=step
+                key=name, images=[self.get_save_path(filename)], step=self.current_epoch
             )
 
     def save_rgb_image(
@@ -220,7 +220,7 @@ class SaverMixin:
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
             self._wandb_logger.log_image(
-                key=name, images=[self.get_save_path(filename)], step=step
+                key=name, images=[self.get_save_path(filename)], step=self.current_epoch
             )
 
     def save_grayscale_image(
@@ -300,7 +300,7 @@ class SaverMixin:
 
         cv2.imwrite(save_path, img)
         if name and self._wandb_logger:
-            self._wandb_logger.log_image(key=name, images=[save_path], step=step)
+            self._wandb_logger.log_image(key=name, images=[save_path], step=self.current_epoch)
         return save_path
 
     def save_image(self, filename, img) -> str:

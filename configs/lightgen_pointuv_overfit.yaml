@@ -1,19 +1,21 @@
 name: lightgen
-tag: "pointuv_overfit_resume_test"
+tag: "pointuv_overfit_resume_test_subset"
 exp_root_dir: "outputs"
 seed: 42
+use_timestamp: false  # CRITICAL: Disable timestamp for auto-resume to work!
 
 # Resume configuration - automatically continues from latest checkpoint
 auto_resume: true  # Enable automatic resumption from latest checkpoint
 
-# Custom output directory - test checkpoint/wandb resume functionality
-custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"
+# Custom output directory - test checkpoint/wandb resume functionality (LOCAL)
+# custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"  # For cluster
+custom_output_dir: "outputs/overfit_resume_test_subset"  # For local testing
 
-# Data configuration - Single sample for overfitting test
+# Data configuration - Single sample for overfitting test (using subsest - note the typo in dir name)
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  data_root: "../data/baked_uv_local"
-  parquet_file: "../data/baked_uv_local/df_SomgProc_filtered.parquet"
+  data_root: "../data/baked_uv_local_subsest"
+  parquet_file: "../data/baked_uv_local_subsest/df_SomgProc_filtered.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -25,11 +27,11 @@ data:
   eval_sup_views: 4
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
-  # Single sample for overfitting (using first sample from filtered dataset)
+  # Single sample for overfitting (using overfit_split_single.json)
   # Using JSON file for reliable parsing
-  train_indices: "configs/data_splits_overfit_single.json"
-  val_indices: "configs/data_splits_overfit_single.json"
-  test_indices: "configs/data_splits_overfit_single.json"
+  train_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
+  val_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
+  test_indices: "../data/baked_uv_local_subsest/overfit_split_single.json"
 
   height: 256
   width: 256
@@ -65,7 +67,7 @@ system:
   image_tokenizer:
     pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
 
-  # Backbone: LightGenPointUVNet
+  # Backbone: LightGenPointUVNet - SMALL for fast local testing
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
     # Input channels: noisy_emission(3) + position_map(3) + baked_texture(5) + baked_weights(1) = 12
@@ -73,16 +75,16 @@ system:
     in_channels: 12
     out_channels: 3
     
-    # Full architecture (matches TEXGen for fair comparison with pretrained weights)
-    num_layers: [1, 1, 1, 1, 1]
-    point_block_num: [1, 1, 2, 4, 6]
-    block_out_channels: [32, 256, 1024, 1024, 2048]
-    dropout: [0.0, 0.0, 0.0, 0.0, 0.0]
+    # SMALLER architecture for faster local testing
+    num_layers: [1, 1, 1]
+    point_block_num: [1, 1, 2]
+    block_out_channels: [32, 128, 256]
+    dropout: [0.0, 0.0, 0.0]
     
-    block_type: ["uv", "point_uv", "uv_dit", "uv_dit", "uv_dit"]
-    voxel_size: [0.01, 0.02, 0.05, 0.05, 0.05]
-    window_size: [0, 128, 128, 256, 256]
-    num_heads: [4, 4, 16, 16, 16]
+    block_type: ["uv", "point_uv", "uv_dit"]
+    voxel_size: [0.01, 0.02, 0.05]
+    window_size: [0, 128, 128]
+    num_heads: [4, 4, 8]
     
     skip_input: true
     skip_type: "adaptive"
@@ -118,22 +120,22 @@ system:
       T_max: 10000
       eta_min: 1e-6
 
-# Trainer configuration - test checkpoint resume
+# Trainer configuration - FAST for local testing
 trainer:
-  max_epochs: 500  # Shorter for testing resume functionality
-  check_val_every_n_epoch: 10  # Validate more frequently to see metrics
+  max_epochs: 10000  # Very short for quick local testing
+  check_val_every_n_epoch: 5  # Validate frequently
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
-  log_every_n_steps: 5  # Log more frequently for testing
+  log_every_n_steps: 1  # Must be 1 when batch count per epoch == 1
   # Note: accelerator and devices are set by launch.py based on --gpu flag
 
-# Checkpoint configuration - ENABLED for testing resume
+# Checkpoint configuration - ENABLED for testing resume (save frequently for testing)
 checkpoint:
   save_last: true  # Save last.ckpt for auto-resume testing
-  save_top_k: 3  # Save top 3 checkpoints
-  every_n_epochs: 10  # Save checkpoint every 10 epochs
+  save_top_k: 2  # Save top 2 checkpoints
+  every_n_epochs: 5  # Save checkpoint every 5 epochs
   monitor: "val/psnr"
   mode: "max"
   save_on_train_epoch_end: false  # Wait for validation before saving
@@ -142,6 +144,6 @@ checkpoint:
 wandb:
   project: "LightGen"  # Wandb project name
   # entity: "your_team_name"  # Optional: your wandb team/username
-  tags: ["overfit", "resume_test", "checkpoint_test"]  # Tags for organization
-  notes: "Testing checkpoint resume, wandb continuation, LR scheduler restoration"
+  tags: ["overfit", "resume_test", "checkpoint_test", "subset"]  # Tags for organization
+  notes: "Testing checkpoint resume, wandb continuation, LR scheduler restoration (local subset)"
 

@@ -332,7 +332,7 @@ class TEXGenDiffusion(BaseSystem):
                 f"it{self.true_global_step}-train.jpg",
                 images,
                 name="train_step_output",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
 
         if outputs['render_out'] is not None:
@@ -358,7 +358,7 @@ class TEXGenDiffusion(BaseSystem):
                 f"it{self.true_global_step}-train-render.jpg",
                 images,
                 name="train_step_output",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
 
     @torch.no_grad()
@@ -451,7 +451,7 @@ class TEXGenDiffusion(BaseSystem):
                 f"it{self.true_global_step}-test/{save_str}_{key}.png",
                 img_format,
                 name=f"test/{key}",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
         
         # Get input albedo from batch
@@ -497,7 +497,7 @@ class TEXGenDiffusion(BaseSystem):
                 f"it{self.true_global_step}-test/{save_str}_{key}.png",
                 mask_format,
                 name=f"test/{key}",
-                step=self.true_global_step,
+                step=self.current_epoch,
             )
         
         # Build comparison list
@@ -517,7 +517,7 @@ class TEXGenDiffusion(BaseSystem):
             f"it{self.true_global_step}-test/{save_str}_comparison.png",
             comparison_img_format,
             name="test/comparison",
-            step=self.true_global_step,
+            step=self.current_epoch,
         )
 
         if self.cfg.test_save_json:
@@ -581,7 +581,7 @@ class TEXGenDiffusion(BaseSystem):
                     f"it{self.true_global_step}-test/{self.global_rank}_{batch_idx}/render_{i}.jpg",
                     img_format,
                     name=f"test_step_output_{self.global_rank}_{batch_idx}",
-                    step=self.true_global_step,
+                    step=self.current_epoch,
                 )
 
     def test_pipeline(self, batch):

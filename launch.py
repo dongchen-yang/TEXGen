@@ -1,7 +1,9 @@
 import argparse
+import atexit
 import contextlib
 import logging
 import os
+import signal
 import sys
 
 # Disable HuggingFace Hub's chat template check for older models
@@ -268,6 +270,19 @@ def main(args, extras) -> None:
                 wandb_config['id'] = wandb_run_id
                 wandb_config['resume'] = 'allow'  # Resume if possible, otherwise start new run
                 spuv.info(f"Configuring wandb to resume run ID: {wandb_run_id}")
+                
+                # CRITICAL: Clean up stale wandb local cache to prevent old un-synced
+                # metrics from being flushed into the resumed run. When a previous session
+                # was killed without wandb.finish(), its local cache contains un-synced data
+                # that gets interleaved with new data at incorrect step numbers.
+                import glob as glob_module
+                wandb_dir = wandb_config.get('dir', '.')
+                stale_dirs = glob_module.glob(os.path.join(wandb_dir, 'wandb', f'*-{wandb_run_id}'))
+                for stale_dir in stale_dirs:
+                    if os.path.isdir(stale_dir):
+                        spuv.info(f"Cleaning stale wandb cache to prevent data oscillation: {stale_dir}")
+                        import shutil
+                        shutil.rmtree(stale_dir, ignore_errors=True)
             
             # Override with custom wandb settings from config if provided
             if hasattr(cfg, 'wandb') and cfg.wandb:
@@ -295,6 +310,92 @@ def main(args, extras) -> None:
             if wandb_run_id is not None:
                 system.set_wandb_run_id(wandb_run_id)
             loggers += [wandb_logger]
+            
+            import wandb
+            
+            # Configure x-axes: training plots against iteration, validation against epoch.
+            # Use SPECIFIC prefixes (not "*" wildcard — wildcard breaks chart rendering).
+            # Force wandb init first so define_metric can be called before any logging.
+            _ = wandb_logger.experiment
+            wandb.define_metric("train/*", step_metric="trainer/global_step")
+            wandb.define_metric("val/*", step_metric="epoch")
+            wandb.define_metric("test/*", step_metric="epoch")
+            wandb.define_metric("test_step_output*", step_metric="epoch")
+            wandb.define_metric("lr-*", step_metric="trainer/global_step")
+            spuv.info("Set wandb x-axes: train/* → trainer/global_step, val/*|test/* → epoch")
+
+            # ── Monkey-patch WandbLogger.log_metrics ──────────────────────────
+            # By default, Lightning calls wandb.log() WITHOUT an explicit step=,
+            # so wandb auto-increments an internal _step counter (0, 1, 2, …).
+            # This makes the media-panel slider show meaningless _step numbers.
+            #
+            # The fix: force step=current_epoch on EVERY wandb.log() call.
+            # Multiple calls within the same epoch merge into one wandb row,
+            # and epochs are monotonically increasing, so no data is dropped.
+            # This makes the media slider show epoch numbers.
+            from pytorch_lightning.loggers.wandb import _add_prefix
+            from pytorch_lightning.utilities.rank_zero import rank_zero_only as _rz
+
+            def _make_epoch_step_logger(wl, sys_ref):
+                @_rz
+                def _log_metrics(metrics, step=None):
+                    metrics = _add_prefix(metrics, wl._prefix, wl.LOGGER_JOIN_CHAR)
+                    epoch = sys_ref.current_epoch
+                    if step is not None:
+                        wl.experiment.log(
+                            dict(metrics, **{"trainer/global_step": step, "epoch": epoch}),
+                            step=epoch,
+                        )
+                    else:
+                        wl.experiment.log(
+                            dict(metrics, **{"epoch": epoch, "trainer/global_step": sys_ref.global_step}),
+                            step=epoch,
+                        )
+                return _log_metrics
+
+            wandb_logger.log_metrics = _make_epoch_step_logger(wandb_logger, system)
+            spuv.info("Patched WandbLogger.log_metrics → step=current_epoch (media slider = epoch)")
+            
+            # Register robust shutdown handlers for wandb.
+            # The try/finally block in trainer.fit() handles KeyboardInterrupt (SIGINT),
+            # but SIGTERM (from schedulers, kill command) and other exits need coverage too.
+            def _ensure_wandb_finish():
+                """Ensure wandb run is finalized on ANY exit (atexit, SIGTERM, etc.)."""
+                try:
+                    import wandb as _wandb
+                    if _wandb.run is not None:
+                        # Block Ctrl+C during sync so the user can't interrupt it.
+                        # This prevents the "Run data was not synced" error.
+                        prev_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                        spuv.info(
+                            "Finishing wandb run (syncing data, please wait -- "
+                            "DO NOT press Ctrl+C again)..."
+                        )
+                        _wandb.finish()
+                        signal.signal(signal.SIGINT, prev_handler)
+                except Exception:
+                    pass  # Best-effort; don't crash during shutdown
+            
+            atexit.register(_ensure_wandb_finish)
+            
+            # Handle SIGTERM gracefully (sent by SLURM, kill, scancel, etc.)
+            _original_sigterm = signal.getsignal(signal.SIGTERM)
+            def _sigterm_handler(signum, frame):
+                spuv.info("Received SIGTERM, finishing wandb run before exit...")
+                _ensure_wandb_finish()
+                # Re-raise with original handler or default behavior
+                if callable(_original_sigterm):
+                    _original_sigterm(signum, frame)
+                else:
+                    sys.exit(128 + signum)
+            signal.signal(signal.SIGTERM, _sigterm_handler)
+
+            # Handle SIGUSR1 (used by some SLURM configs for preemption warnings)
+            def _sigusr1_handler(signum, frame):
+                spuv.info("Received SIGUSR1 (preemption warning), finishing wandb run...")
+                _ensure_wandb_finish()
+                sys.exit(128 + signum)
+            signal.signal(signal.SIGUSR1, _sigusr1_handler)
         rank_zero_only(
             lambda: write_to_text(
                 os.path.join(cfg.trial_dir, "cmd.txt"),
@@ -332,8 +433,33 @@ def main(args, extras) -> None:
             spuv.info(f"Expected resume from epoch: {resume_epoch}, global_step: {resume_step}")
             spuv.info(f"=" * 80)
         
-        trainer.fit(system, datamodule=dm, ckpt_path=cfg.resume)
-        trainer.test(system, datamodule=dm)
+        try:
+            trainer.fit(system, datamodule=dm, ckpt_path=cfg.resume)
+            trainer.test(system, datamodule=dm)
+        except (KeyboardInterrupt, SystemExit):
+            # Lightning intercepts KeyboardInterrupt and calls exit(1) → SystemExit.
+            # We catch both to ensure wandb sync happens.
+            spuv.info("Detected interrupt, attempting graceful shutdown ...")
+        finally:
+            # CRITICAL: Ensure wandb finishes syncing before exit.
+            # Without this, interrupted runs leave un-synced metrics in the local
+            # wandb cache. When the run is later resumed, those stale metrics get
+            # flushed at new step numbers, causing oscillation in the epoch vs step
+            # plot (old epoch values interleaved with new ones).
+            if args.wandb:
+                import wandb
+                if wandb.run is not None:
+                    # Block Ctrl+C during sync so user can't kill the sync process
+                    prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    spuv.info(
+                        "Syncing wandb data (please wait, do NOT press Ctrl+C)..."
+                    )
+                    try:
+                        wandb.finish()
+                    except Exception as e:
+                        spuv.warn(f"wandb.finish() error: {e}")
+                    finally:
+                        signal.signal(signal.SIGINT, prev)
         if args.gradio:
             # also export assets if in gradio mode
             trainer.predict(system, datamodule=dm)
