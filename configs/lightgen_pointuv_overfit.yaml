@@ -1,13 +1,13 @@
 name: lightgen
-tag: "pointuv_256_overfit_baseline"
+tag: "pointuv_overfit_resume_test"
 exp_root_dir: "outputs"
 seed: 42
 
 # Resume configuration - automatically continues from latest checkpoint
 auto_resume: true  # Enable automatic resumption from latest checkpoint
 
-# Custom output directory (optional) - overrides exp_root_dir for all outputs
-# custom_output_dir: "/scratch/dya78/lightgen/overfit_outputs"
+# Custom output directory - test checkpoint/wandb resume functionality
+custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"
 
 # Data configuration - Single sample for overfitting test
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
@@ -118,23 +118,22 @@ system:
       T_max: 10000
       eta_min: 1e-6
 
-# Trainer configuration
+# Trainer configuration - test checkpoint resume
 trainer:
-  max_epochs: 10000  # Very long training to test convergence limit
-  check_val_every_n_epoch: 100  # Validate every 100 epochs
+  max_epochs: 500  # Shorter for testing resume functionality
+  check_val_every_n_epoch: 10  # Validate more frequently to see metrics
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
-  log_every_n_steps: 10
+  log_every_n_steps: 5  # Log more frequently for testing
   # Note: accelerator and devices are set by launch.py based on --gpu flag
 
-# Checkpoint configuration
+# Checkpoint configuration - ENABLED for testing resume
 checkpoint:
-  # dirpath: "/scratch/dya78/lightgen/TEXGen/pointuv_256_overfit_baseline/"  # Custom checkpoint directory
-  save_last: false  # Disabled for speed during overfitting test
-  save_top_k: 0  # No checkpoints saved
-  every_n_epochs: 10
+  save_last: true  # Save last.ckpt for auto-resume testing
+  save_top_k: 3  # Save top 3 checkpoints
+  every_n_epochs: 10  # Save checkpoint every 10 epochs
   monitor: "val/psnr"
   mode: "max"
   save_on_train_epoch_end: false  # Wait for validation before saving
@@ -143,7 +142,6 @@ checkpoint:
 wandb:
   project: "LightGen"  # Wandb project name
   # entity: "your_team_name"  # Optional: your wandb team/username
-  # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
-  tags: ["overfit"]  # Tags for organization
-  notes: "Overfitting test on single sample - baseline configuration"
+  tags: ["overfit", "resume_test", "checkpoint_test"]  # Tags for organization
+  notes: "Testing checkpoint resume, wandb continuation, LR scheduler restoration"
 

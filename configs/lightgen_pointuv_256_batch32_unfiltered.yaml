@@ -1,5 +1,5 @@
 name: lightgen
-tag: "pointuv_256res_batch32_unfiltered"
+tag: "pointuv_256res_batch32_complete"
 exp_root_dir: "outputs"
 seed: 42
 
@@ -9,14 +9,13 @@ auto_resume: true  # Enable automatic resumption from latest checkpoint in check
 # Custom output directory (optional) - overrides exp_root_dir for all outputs
 # custom_output_dir: "/scratch/dya78/lightgen/custom_outputs"
 
-# Data configuration - ALL EMISSIVE samples (70K+ training samples)
-# Uses ALL emissive objects from processed_data/emissive_dicts while keeping same val/test sets
+# Data configuration - COMPLETE EMISSIVE samples (74,350 total, 72,864 training samples)
+# Uses emissive objects from emissive_complete_obj_ids.txt (objects with complete .npz data and success=True)
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
-  # IMPORTANT: Using full dataset
-  # This contains all the emissive samples identified in processed_data/emissive_dicts
-  data_root: "../data/baked_uv"
-  parquet_file: "../data/baked_uv/df_SomgProc_final.parquet"
+  # Complete emissive dataset with .npz files
+  data_root: "../data/baked_uv_local"
+  parquet_file: "../data/baked_uv_local/df_SomgProc_complete.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -28,13 +27,13 @@ data:
   eval_sup_views: 4
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
-  # Train/Val/Test splits - all emissive samples with same val/test sets
-  # Train: 70,331 samples (ALL emissive objects except val/test)
-  # Val:   108 samples (same as filtered split, emissive only)
-  # Test:  114 samples (same as filtered split, emissive only)
-  train_indices: "../data_processing/annotation/data_splits_emissive.json"
-  val_indices: "../data_processing/annotation/data_splits_emissive.json"
-  test_indices: "../data_processing/annotation/data_splits_emissive.json"
+  # Train/Val/Test splits - complete emissive objects (with .npz files)
+  # Train: 72,864 samples (98% of complete objects)
+  # Val:   743 samples (1% of complete objects)
+  # Test:  743 samples (1% of complete objects)
+  train_indices: "../data/baked_uv_local/data_splits_complete.json"
+  val_indices: "../data/baked_uv_local/data_splits_complete.json"
+  test_indices: "../data/baked_uv_local/data_splits_complete.json"
 
   # Lower resolution settings for faster training and larger batch size
   height: 256
@@ -139,8 +138,8 @@ system:
       eta_min: 1e-6
 
 # Trainer configuration
-# Note: With 70K+ samples, each epoch is ~2,200 steps at batch_size=32
-# This is much more manageable than the 824K unfiltered dataset
+# Note: With 72,864 training samples, each epoch is ~2,277 steps at batch_size=32
+# Total dataset: 74,350 complete emissive objects
 trainer:
   max_epochs: 500  # More epochs since dataset is more focused on emissive objects
   check_val_every_n_epoch: 10  # Validate every 10 epochs
@@ -153,7 +152,7 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: "/scratch/dya78/lightgen/TEXGen/output_unfiltered/"
+  dirpath: "/scratch/dya78/lightgen/TEXGen/output_complete/"
   save_last: true
   save_top_k: 5
   every_n_epochs: 1
@@ -166,7 +165,7 @@ wandb:
   project: "LightGen"  # Wandb project name
   # entity: "your_team_name"  # Optional: your wandb team/username
   # dir: "/scratch/dya78/lightgen/wandb_logs"  # Optional: custom wandb directory
-  tags: ["emissive_only", "70k_samples", "full_emissive_dataset"]
-  notes: "Training on ALL emissive samples (70K+) with same val/test sets - 256x256 resolution, batch size 32"
+  tags: ["emissive_only", "74k_samples", "complete_emissive_dataset"]
+  notes: "Training on complete emissive samples (74,350 total, 72,864 train) with .npz data - 256x256 resolution, batch size 32"
 
 

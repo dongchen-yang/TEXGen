@@ -135,16 +135,54 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         return self._wandb_run_id
 
     def on_save_checkpoint(self, checkpoint):
-        """Save wandb run ID to checkpoint for resuming"""
+        """Save wandb run ID and critical training state to checkpoint"""
         if self._wandb_logger is not None and hasattr(self._wandb_logger.experiment, 'id'):
             checkpoint['wandb_run_id'] = self._wandb_logger.experiment.id
             spuv.info(f"Saved wandb run ID to checkpoint: {checkpoint['wandb_run_id']}")
+        
+        # CRITICAL: Ensure scheduler state is explicitly saved
+        # PyTorch Lightning 2.x sometimes fails to restore scheduler state properly
+        if hasattr(self, 'lr_schedulers'):
+            schedulers = self.lr_schedulers()
+            if not isinstance(schedulers, list):
+                schedulers = [schedulers]
+            
+            checkpoint['_scheduler_states'] = []
+            for i, scheduler in enumerate(schedulers):
+                state = {
+                    'last_epoch': scheduler.last_epoch if hasattr(scheduler, 'last_epoch') else 0,
+                    '_last_lr': scheduler._last_lr if hasattr(scheduler, '_last_lr') else None,
+                    'state_dict': scheduler.state_dict(),
+                }
+                checkpoint['_scheduler_states'].append(state)
+                spuv.info(f"Explicitly saved scheduler {i} state: last_epoch={state['last_epoch']}, last_lr={state['_last_lr']}")
     
     def on_load_checkpoint(self, checkpoint):
-        """Load wandb run ID from checkpoint"""
+        """Load wandb run ID and restore scheduler state from checkpoint"""
         if 'wandb_run_id' in checkpoint:
             self._wandb_run_id = checkpoint['wandb_run_id']
             spuv.info(f"Loaded wandb run ID from checkpoint: {self._wandb_run_id}")
+        
+        # Log checkpoint state for debugging resume issues
+        if 'epoch' in checkpoint and 'global_step' in checkpoint:
+            spuv.info(f"Loading checkpoint from epoch {checkpoint['epoch']}, global_step {checkpoint['global_step']}")
+        
+        # Store scheduler state for restoration in on_fit_start
+        # (can't restore here because schedulers aren't created yet)
+        self._saved_scheduler_states = checkpoint.get('_scheduler_states', None)
+        if self._saved_scheduler_states:
+            spuv.info(f"Found explicitly saved scheduler states in checkpoint")
+            for i, state in enumerate(self._saved_scheduler_states):
+                spuv.info(f"  Scheduler {i}: last_epoch={state['last_epoch']}, last_lr={state['_last_lr']}")
+        
+        # Also check Lightning's built-in scheduler state
+        if 'lr_schedulers' in checkpoint:
+            spuv.info(f"Found {len(checkpoint['lr_schedulers'])} Lightning scheduler(s) in checkpoint")
+            for i, sched_state in enumerate(checkpoint['lr_schedulers']):
+                if 'last_epoch' in sched_state:
+                    spuv.info(f"  Lightning Scheduler {i} last_epoch: {sched_state['last_epoch']}")
+                if '_last_lr' in sched_state:
+                    spuv.info(f"  Lightning Scheduler {i} last_lr: {sched_state['_last_lr']}")
 
     @property
     def resumed(self):
@@ -197,6 +235,68 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             spuv.warn(
                 f"Saving directory not set for the system, visualization results will not be saved"
             )
+        
+        # CRITICAL: Verify checkpoint was actually loaded when resuming
+        if self._resumed:
+            current_epoch = self.current_epoch
+            current_step = self.global_step
+            spuv.info(f"=" * 80)
+            spuv.info(f"CHECKPOINT RESUME VERIFICATION:")
+            spuv.info(f"  Current epoch: {current_epoch}")
+            spuv.info(f"  Current global_step: {current_step}")
+            
+            if current_step == 0 and current_epoch == 0:
+                spuv.error(
+                    "=" * 80 + "\n" +
+                    "CRITICAL ERROR: Checkpoint resume FAILED!\n" +
+                    "global_step and epoch are both 0, but resumed=True.\n" +
+                    "This means PyTorch Lightning did not restore the checkpoint state.\n" +
+                    "Training will start from scratch instead of resuming!\n" +
+                    "=" * 80
+                )
+            else:
+                spuv.info(f"  ✓ Checkpoint state successfully restored!")
+                spuv.info(f"  Logging will continue from step {current_step}")
+            
+            spuv.info(f"=" * 80)
+        
+        # CRITICAL: Restore scheduler state when resuming training
+        if self._resumed and hasattr(self, 'lr_schedulers'):
+            schedulers = self.lr_schedulers()
+            if not isinstance(schedulers, list):
+                schedulers = [schedulers]
+            
+            # Check if we have explicitly saved scheduler states
+            if hasattr(self, '_saved_scheduler_states') and self._saved_scheduler_states:
+                spuv.info("Restoring scheduler states from explicit checkpoint save...")
+                for i, (scheduler, saved_state) in enumerate(zip(schedulers, self._saved_scheduler_states)):
+                    # Restore scheduler state
+                    scheduler.load_state_dict(saved_state['state_dict'])
+                    if saved_state['last_epoch'] is not None:
+                        scheduler.last_epoch = saved_state['last_epoch']
+                    if saved_state['_last_lr'] is not None:
+                        scheduler._last_lr = saved_state['_last_lr']
+                    spuv.info(f"Restored scheduler {i}: last_epoch={scheduler.last_epoch}, last_lr={scheduler._last_lr}")
+            
+            # Verify and correct scheduler state
+            for i, scheduler in enumerate(schedulers):
+                if hasattr(scheduler, 'last_epoch'):
+                    expected_step = self.global_step
+                    actual_step = scheduler.last_epoch
+                    
+                    # Allow small mismatch due to logging intervals
+                    if abs(expected_step - actual_step) > 10:
+                        spuv.warn(
+                            f"Scheduler {i} last_epoch ({actual_step}) does not match global_step ({expected_step}). "
+                            f"This may cause LR discontinuities. Correcting scheduler state..."
+                        )
+                        # Fix the scheduler's last_epoch to match global_step
+                        scheduler.last_epoch = expected_step
+                        # Step the scheduler to recalculate LR
+                        scheduler.step()
+                    
+                    current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 'unknown'
+                    spuv.info(f"Scheduler {i} final state: step={scheduler.last_epoch}, LR={current_lr}")
         
         # Set memory baseline after model is loaded and initialized
         from spuv.utils.memory_tracker import log_memory, set_baseline
@@ -274,6 +374,23 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         import gc
         if hasattr(self, 'current_epoch'):
             log_memory(f"epoch_end_before_cleanup (epoch={self.current_epoch})", force=True)
+            
+            # Log epoch-aggregated training metrics to wandb with epoch as x-axis
+            if self._wandb_logger is not None and hasattr(self._wandb_logger, 'experiment'):
+                metrics = self.trainer.callback_metrics
+                epoch_metrics = {}
+                
+                for key, value in metrics.items():
+                    # Find metrics that end with '_epoch' (aggregated epoch metrics)
+                    if key.endswith('_epoch') and 'train/' in key:
+                        # Create cleaner metric name for wandb
+                        clean_key = key.replace('_epoch', '_vs_epoch')
+                        epoch_metrics[clean_key] = value.item() if hasattr(value, 'item') else value
+                
+                if epoch_metrics:
+                    # Log with current_epoch as the step (x-axis)
+                    self._wandb_logger.experiment.log(epoch_metrics, step=self.current_epoch)
+            
             # Only do expensive cleanup every 10 epochs to avoid slowdown
             if self.current_epoch % 10 == 0:
                 gc.collect()

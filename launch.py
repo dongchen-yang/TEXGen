@@ -149,35 +149,50 @@ def main(args, extras) -> None:
             ckpt_dir = os.path.join(cfg.trial_dir, "ckpts")
         
         if os.path.exists(ckpt_dir):
-            # Find all checkpoint files
-            import glob
-            ckpt_files = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
-            if ckpt_files:
-                # Get the most recent checkpoint by modification time
-                latest_ckpt = max(ckpt_files, key=os.path.getmtime)
-                cfg.resume = latest_ckpt
-                spuv.info(f"Auto-resume: Found latest checkpoint at {latest_ckpt}")
+            # Try to load last.ckpt (PyTorch Lightning's default last checkpoint)
+            last_ckpt = os.path.join(ckpt_dir, "last.ckpt")
+            
+            if os.path.exists(last_ckpt):
+                try:
+                    # Verify it's a valid checkpoint
+                    ckpt = torch.load(last_ckpt, map_location="cpu", weights_only=False)
+                    step = ckpt.get('global_step', -1)
+                    epoch = ckpt.get('epoch', -1)
+                    
+                    cfg.resume = last_ckpt
+                    spuv.info(f"Auto-resume: Found last.ckpt")
+                    spuv.info(f"  Epoch: {epoch}, Global Step: {step}")
+                except Exception as e:
+                    spuv.warn(f"Failed to load last.ckpt: {e}")
+                    cfg.resume = None
             else:
+                spuv.info(f"Auto-resume enabled but last.ckpt not found in {ckpt_dir}, starting fresh")
                 cfg.resume = None
-                spuv.info(f"Auto-resume enabled but no checkpoints found in {ckpt_dir}, starting fresh")
         else:
             cfg.resume = None
             spuv.info(f"Auto-resume enabled but checkpoint directory {ckpt_dir} does not exist, starting fresh")
 
-    # Load wandb run ID from checkpoint if resuming
+    # Load checkpoint info if resuming (for wandb and proper step counting)
     wandb_run_id = None
-    if cfg.resume is not None and args.train and args.wandb:
+    resume_step = None
+    resume_epoch = None
+    if cfg.resume is not None and args.train:
         try:
             # Load checkpoint with weights_only=False to allow OmegaConf objects
             # This is safe since we trust our own checkpoints
             ckpt = torch.load(cfg.resume, map_location="cpu", weights_only=False)
-            if 'wandb_run_id' in ckpt:
+            if args.wandb and 'wandb_run_id' in ckpt:
                 wandb_run_id = ckpt['wandb_run_id']
                 spuv.info(f"Resuming wandb run with ID: {wandb_run_id}")
-            else:
+            elif args.wandb:
                 spuv.warn("No wandb run ID found in checkpoint, starting new wandb run")
+            # Extract step and epoch for proper logging continuity
+            resume_step = ckpt.get('global_step', None)
+            resume_epoch = ckpt.get('epoch', None)
+            if resume_step is not None:
+                spuv.info(f"Resuming from epoch {resume_epoch}, global_step {resume_step}")
         except Exception as e:
-            spuv.warn(f"Failed to load wandb run ID from checkpoint: {e}")
+            spuv.warn(f"Failed to load checkpoint info: {e}")
 
     dm = spuv.find(cfg.data_cls)(cfg.data)
     system: BaseSystem = spuv.find(cfg.system_cls)(
@@ -287,14 +302,17 @@ def main(args, extras) -> None:
             )
         )()
     print(f"Set up Trainer with {n_gpus} GPUs")
-    trainer = Trainer(
-        callbacks=callbacks,
-        logger=loggers,
-        inference_mode=False,
-        accelerator="gpu",
-        devices=devices,
+    
+    trainer_kwargs = {
+        "callbacks": callbacks,
+        "logger": loggers,
+        "inference_mode": False,
+        "accelerator": "gpu",
+        "devices": devices,
         **cfg.trainer,
-    )
+    }
+    
+    trainer = Trainer(**trainer_kwargs)
 
     def set_system_status(system: BaseSystem, ckpt_path: Optional[str]):
         if ckpt_path is None:
@@ -305,6 +323,15 @@ def main(args, extras) -> None:
     if args.train:
         #system = torch.compile(system)
         #spuv.info("compiled system")
+        
+        # CRITICAL FIX for checkpoint resume
+        # PyTorch Lightning 2.x requires explicit checkpoint path handling
+        if cfg.resume is not None:
+            spuv.info(f"=" * 80)
+            spuv.info(f"RESUMING TRAINING FROM CHECKPOINT: {cfg.resume}")
+            spuv.info(f"Expected resume from epoch: {resume_epoch}, global_step: {resume_step}")
+            spuv.info(f"=" * 80)
+        
         trainer.fit(system, datamodule=dm, ckpt_path=cfg.resume)
         trainer.test(system, datamodule=dm)
         if args.gradio:

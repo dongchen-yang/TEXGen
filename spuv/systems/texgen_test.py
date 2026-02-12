@@ -253,11 +253,30 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             self._ema_switched = False
     
     def on_validation_epoch_end(self):
-        """Restore training weights once at the end of validation"""
+        """Restore training weights and log epoch metrics with correct x-axis"""
         if self._ema_switched:
             spuv.info("Validation with EMA weights: Restoring training weights")
             self.backbone_ema.restore(self.backbone.parameters())
             self._ema_switched = False
+        
+        # Log epoch-aggregated metrics to wandb with epoch as x-axis
+        # PyTorch Lightning logs epoch metrics with global_step by default, which is confusing
+        if self._wandb_logger is not None and hasattr(self._wandb_logger, 'experiment'):
+            # Get the aggregated epoch metrics from the logger
+            metrics = self.trainer.callback_metrics
+            epoch_metrics = {}
+            
+            for key, value in metrics.items():
+                # Find metrics that end with '_epoch' (these are the aggregated epoch metrics)
+                if key.endswith('_epoch') and 'val/' in key:
+                    # Remove '_epoch' suffix for cleaner wandb metric name
+                    clean_key = key.replace('_epoch', '_vs_epoch')
+                    epoch_metrics[clean_key] = value.item() if hasattr(value, 'item') else value
+            
+            if epoch_metrics:
+                # Log with current_epoch as the step (x-axis)
+                self._wandb_logger.experiment.log(epoch_metrics, step=self.current_epoch)
+                spuv.debug(f"Logged epoch metrics to wandb at epoch {self.current_epoch}: {list(epoch_metrics.keys())}")
     
     def validation_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
