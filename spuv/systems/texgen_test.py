@@ -304,14 +304,13 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)
         
-        # Log metrics (aggregated per epoch only - on_step=True during validation
-        # causes trainer/global_step to be logged with the validation batch index
-        # instead of the actual training step, which corrupts the wandb x-axis)
+        # Log metrics (aggregated per epoch, x-axis is trainer/global_step via define_metric)
         self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         
         # Loop through batch to save individual images and create visualizations
         has_thumbnail = 'thumbnail' in batch and batch['thumbnail'] is not None
+        has_albedo = 'albedo_map' in batch and batch['albedo_map'] is not None
         
         for b_idx in range(batch_size):
             save_str = batch["scene_id"][b_idx]
@@ -337,7 +336,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 img_format,
             )
             
-            # Create a composite visualization: [Input | Prediction | Ground Truth] for each object
+            # Create a composite visualization for each object
             
             # Prepare prediction
             pred_value = texture_map_outputs["pred_x0"][b_idx:b_idx+1]
@@ -366,7 +365,6 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                     thumbnail_img = thumbnail[0]  # [H, W, 3]
                 
                 # Resize thumbnail to match UV map height for side-by-side display
-                # UV maps are typically 512x512 or 1024x1024, thumbnails are usually 256x256
                 H_uv, W_uv = pred_vis.shape[0], pred_vis.shape[1]
                 H_thumb, W_thumb = thumbnail_img.shape[0], thumbnail_img.shape[1]
                 
@@ -385,19 +383,21 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                     start = (H_thumb - H_uv) // 2
                     thumbnail_img = thumbnail_img[start:start+H_uv]
             
-            # Create composite image: [Input | Prediction | Ground Truth]
+            # Prepare input albedo UV map
+            if has_albedo:
+                albedo = batch['albedo_map'][b_idx:b_idx+1]  # [1, 3, H, W]
+                albedo_masked = albedo * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+                albedo_flip = torch.flip(albedo_masked, dims=[2])
+                albedo_vis = rearrange(albedo_flip, "B C H W-> (B H) W C")
+            
+            # Create composite image: [Thumbnail | Albedo | Prediction | Ground Truth]
+            composite_imgs = []
             if has_thumbnail:
-                composite_imgs = [
-                    {"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}},
-                    {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
-                    {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
-                ]
-            else:
-                # If no thumbnail, just show [Prediction | Ground Truth]
-                composite_imgs = [
-                    {"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}},
-                    {"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}},
-                ]
+                composite_imgs.append({"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}})
+            if has_albedo:
+                composite_imgs.append({"type": "rgb", "img": albedo_vis, "kwargs": {"data_format": "HWC"}})
+            composite_imgs.append({"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}})
+            composite_imgs.append({"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}})
             
             # Log composite image with object identifier
             object_id = save_str
@@ -405,7 +405,6 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 f"it{self.true_global_step}-test/preview/composite_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
                 composite_imgs,
                 name=f"test/validation/{object_id}",
-                step=self.current_epoch,
             )
             
             # Also save individual images to disk (but not to WandB) for reference
@@ -430,6 +429,12 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 self.save_image_grid(
                     f"it{self.true_global_step}-test/preview/thumbnail_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
                     [{"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}}],
+                )
+            
+            if has_albedo:
+                self.save_image_grid(
+                    f"it{self.true_global_step}-test/preview/albedo_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
+                    [{"type": "rgb", "img": albedo_vis, "kwargs": {"data_format": "HWC"}}],
                 )
         
         # Explicit cleanup of large tensors to prevent memory leaks

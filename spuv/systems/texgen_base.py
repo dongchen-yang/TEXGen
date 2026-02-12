@@ -423,7 +423,7 @@ class TEXGenDiffusion(BaseSystem):
         mse = torch.mean((pred_img - gt_img) ** 2)
         psnr = -10 * torch.log10(mse + 1e-8)
         
-        # Log metrics (aggregated per epoch for cleaner visualization with epoch as x-axis)
+        # Log metrics (aggregated per epoch, x-axis is trainer/global_step via define_metric)
         self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         

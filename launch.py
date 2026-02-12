@@ -327,45 +327,34 @@ def main(args, extras) -> None:
             # ── Monkey-patch WandbLogger.log_metrics ──────────────────────────
             # By default, Lightning calls wandb.log() WITHOUT an explicit step=,
             # so wandb auto-increments an internal _step counter (0, 1, 2, …).
+            # This makes the media-panel slider show meaningless _step numbers.
             #
-            # The fix: Use global_step for training metrics and epoch for val/test.
-            # This ensures train/* plots against iteration and val/*/test/* against epoch.
+            # The fix: force step=current_epoch on EVERY wandb.log() call.
+            # Multiple calls within the same epoch merge into one wandb row,
+            # and epochs are monotonically increasing, so no data is dropped.
+            # This makes the media slider show epoch numbers.
             from pytorch_lightning.loggers.wandb import _add_prefix
             from pytorch_lightning.utilities.rank_zero import rank_zero_only as _rz
 
-            def _make_smart_step_logger(wl, sys_ref):
+            def _make_epoch_step_logger(wl, sys_ref):
                 @_rz
                 def _log_metrics(metrics, step=None):
                     metrics = _add_prefix(metrics, wl._prefix, wl.LOGGER_JOIN_CHAR)
                     epoch = sys_ref.current_epoch
-                    global_step = sys_ref.global_step
-                    
-                    # Determine which step to use based on metric prefix
-                    # Training metrics use global_step, val/test use epoch
-                    is_train_metric = any(k.startswith('train/') for k in metrics.keys())
-                    
                     if step is not None:
-                        # When step is explicitly provided, use it
                         wl.experiment.log(
                             dict(metrics, **{"trainer/global_step": step, "epoch": epoch}),
-                            step=step,
-                        )
-                    elif is_train_metric:
-                        # Training metrics: use global_step
-                        wl.experiment.log(
-                            dict(metrics, **{"epoch": epoch, "trainer/global_step": global_step}),
-                            step=global_step,
+                            step=epoch,
                         )
                     else:
-                        # Validation/test metrics: use epoch
                         wl.experiment.log(
-                            dict(metrics, **{"epoch": epoch, "trainer/global_step": global_step}),
+                            dict(metrics, **{"epoch": epoch, "trainer/global_step": sys_ref.global_step}),
                             step=epoch,
                         )
                 return _log_metrics
 
-            wandb_logger.log_metrics = _make_smart_step_logger(wandb_logger, system)
-            spuv.info("Patched WandbLogger.log_metrics → train/* use global_step, val/*/test/* use epoch")
+            wandb_logger.log_metrics = _make_epoch_step_logger(wandb_logger, system)
+            spuv.info("Patched WandbLogger.log_metrics → step=current_epoch (media slider = epoch)")
             
             # Register robust shutdown handlers for wandb.
             # The try/finally block in trainer.fit() handles KeyboardInterrupt (SIGINT),

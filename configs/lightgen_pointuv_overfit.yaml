@@ -8,8 +8,8 @@ use_timestamp: false  # CRITICAL: Disable timestamp for auto-resume to work!
 auto_resume: true  # Enable automatic resumption from latest checkpoint
 
 # Custom output directory - test checkpoint/wandb resume functionality (LOCAL)
-custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"  # For cluster
-# custom_output_dir: "outputs/overfit_resume_test_subset"  # For local testing
+# custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"  # For cluster
+custom_output_dir: "outputs/overfit_resume_test_subset"  # For local testing
 
 # Data configuration - Single sample for overfitting test (using subsest - note the typo in dir name)
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
