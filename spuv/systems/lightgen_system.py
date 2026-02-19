@@ -387,11 +387,9 @@ class LightGenSystem(TEXGenDiffusion):
                     ])
                     del gt_emission_mask, pred_emission_mask
                 
-                self._wandb_logger.log_image(
-                    key="train/predictions",
-                    images=images,
-                    step=self.current_epoch
-                )
+                import wandb as _wandb
+                if _wandb.run is not None:
+                    _wandb.log({"train/predictions": images, "trainer/global_step": self.global_step})
                 # Aggressive cleanup of all visualization tensors
                 del images, pred_x0, pred_img, gt_img
                 if albedo_img is not None:

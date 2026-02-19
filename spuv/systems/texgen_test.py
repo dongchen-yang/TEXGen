@@ -487,7 +487,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 f"it{self.true_global_step}-test/preview/render_{key}_{self.global_rank}_{batch_idx}.jpg",
                 img_format,
                 name=f"test_step_output_{self.global_rank}_{batch_idx}",
-                step=self.current_epoch,
+                step=None,
             )
 
             render_images[key] = torch.clamp(rearrange(render_out, "B V H W C -> (B V) C H W"), min=0, max=1)

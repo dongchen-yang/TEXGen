@@ -313,48 +313,38 @@ def main(args, extras) -> None:
             
             import wandb
             
-            # Configure x-axes: training plots against iteration, validation against epoch.
-            # Use SPECIFIC prefixes (not "*" wildcard — wildcard breaks chart rendering).
-            # Force wandb init first so define_metric can be called before any logging.
+            # Configure x-axes: use trainer/global_step for everything.
+            # CRITICAL: We NEVER pass step= to wandb.log(). Each wandb.log() call
+            # auto-increments an internal counter. We include trainer/global_step as
+            # a regular metric and use define_metric() to tell W&B to use it as
+            # the chart x-axis. This avoids the step=epoch approach which silently
+            # drops validation data (wandb.log(step=N) advances counter to N+1,
+            # so the next call at step=N is rejected as going backwards).
             _ = wandb_logger.experiment
-            wandb.define_metric("train/*", step_metric="trainer/global_step")
-            wandb.define_metric("val/*", step_metric="epoch")
-            wandb.define_metric("test/*", step_metric="epoch")
-            wandb.define_metric("test_step_output*", step_metric="epoch")
-            wandb.define_metric("lr-*", step_metric="trainer/global_step")
-            spuv.info("Set wandb x-axes: train/* → trainer/global_step, val/*|test/* → epoch")
+            wandb.define_metric("trainer/global_step")
+            wandb.define_metric("*", step_metric="trainer/global_step")
+            spuv.info("Set wandb x-axes: all metrics use trainer/global_step (via define_metric)")
 
             # ── Monkey-patch WandbLogger.log_metrics ──────────────────────────
-            # By default, Lightning calls wandb.log() WITHOUT an explicit step=,
-            # so wandb auto-increments an internal _step counter (0, 1, 2, …).
-            # This makes the media-panel slider show meaningless _step numbers.
-            #
-            # The fix: force step=current_epoch on EVERY wandb.log() call.
-            # Multiple calls within the same epoch merge into one wandb row,
-            # and epochs are monotonically increasing, so no data is dropped.
-            # This makes the media slider show epoch numbers.
+            # Include trainer/global_step and epoch as regular metrics in every
+            # wandb.log() call. Do NOT pass step= to avoid counter conflicts.
             from pytorch_lightning.loggers.wandb import _add_prefix
             from pytorch_lightning.utilities.rank_zero import rank_zero_only as _rz
 
-            def _make_epoch_step_logger(wl, sys_ref):
+            def _make_consistent_step_logger(wl, sys_ref):
                 @_rz
                 def _log_metrics(metrics, step=None):
                     metrics = _add_prefix(metrics, wl._prefix, wl.LOGGER_JOIN_CHAR)
                     epoch = sys_ref.current_epoch
-                    if step is not None:
-                        wl.experiment.log(
-                            dict(metrics, **{"trainer/global_step": step, "epoch": epoch}),
-                            step=epoch,
-                        )
-                    else:
-                        wl.experiment.log(
-                            dict(metrics, **{"epoch": epoch, "trainer/global_step": sys_ref.global_step}),
-                            step=epoch,
-                        )
+                    global_step = sys_ref.global_step
+                    step_val = step if step is not None else global_step
+                    wl.experiment.log(
+                        dict(metrics, **{"trainer/global_step": step_val, "epoch": epoch}),
+                    )
                 return _log_metrics
 
-            wandb_logger.log_metrics = _make_epoch_step_logger(wandb_logger, system)
-            spuv.info("Patched WandbLogger.log_metrics → step=current_epoch (media slider = epoch)")
+            wandb_logger.log_metrics = _make_consistent_step_logger(wandb_logger, system)
+            spuv.info("Patched WandbLogger.log_metrics → no step= (define_metric handles x-axis)")
             
             # Register robust shutdown handlers for wandb.
             # The try/finally block in trainer.fit() handles KeyboardInterrupt (SIGINT),
