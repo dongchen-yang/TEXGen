@@ -112,7 +112,7 @@ class SaverMixin:
         if name and self._wandb_logger:
             import wandb as _wandb
             if _wandb.run is not None:
-                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step})
+                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step, "epoch": self.current_epoch})
 
     def save_rgb_image(
         self,
@@ -221,7 +221,7 @@ class SaverMixin:
         if name and self._wandb_logger:
             import wandb as _wandb
             if _wandb.run is not None:
-                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step})
+                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step, "epoch": self.current_epoch})
 
     def save_grayscale_image(
         self,
@@ -303,7 +303,7 @@ class SaverMixin:
             import wandb as _wandb
             if _wandb.run is not None:
                 log_step = step if step is not None else self.global_step
-                _wandb.log({name: _wandb.Image(save_path), "trainer/global_step": log_step})
+                _wandb.log({name: _wandb.Image(save_path), "trainer/global_step": log_step, "epoch": self.current_epoch})
         return save_path
 
     def save_image(self, filename, img) -> str:

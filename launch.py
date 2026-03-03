@@ -151,24 +151,26 @@ def main(args, extras) -> None:
             ckpt_dir = os.path.join(cfg.trial_dir, "ckpts")
         
         if os.path.exists(ckpt_dir):
-            # Try to load last.ckpt (PyTorch Lightning's default last checkpoint)
-            last_ckpt = os.path.join(ckpt_dir, "last.ckpt")
-            
-            if os.path.exists(last_ckpt):
+            # Find the most recently modified last*.ckpt (handles last.ckpt, last-v1.ckpt, etc.)
+            import glob as _glob
+            last_ckpts = _glob.glob(os.path.join(ckpt_dir, "last*.ckpt"))
+            last_ckpt = max(last_ckpts, key=os.path.getmtime) if last_ckpts else None
+
+            if last_ckpt:
                 try:
                     # Verify it's a valid checkpoint
                     ckpt = torch.load(last_ckpt, map_location="cpu", weights_only=False)
                     step = ckpt.get('global_step', -1)
                     epoch = ckpt.get('epoch', -1)
-                    
+
                     cfg.resume = last_ckpt
-                    spuv.info(f"Auto-resume: Found last.ckpt")
+                    spuv.info(f"Auto-resume: Found {os.path.basename(last_ckpt)}")
                     spuv.info(f"  Epoch: {epoch}, Global Step: {step}")
                 except Exception as e:
-                    spuv.warn(f"Failed to load last.ckpt: {e}")
+                    spuv.warn(f"Failed to load {os.path.basename(last_ckpt)}: {e}")
                     cfg.resume = None
             else:
-                spuv.info(f"Auto-resume enabled but last.ckpt not found in {ckpt_dir}, starting fresh")
+                spuv.info(f"Auto-resume enabled but no last*.ckpt found in {ckpt_dir}, starting fresh")
                 cfg.resume = None
         else:
             cfg.resume = None
@@ -265,25 +267,6 @@ def main(args, extras) -> None:
                 "config": dict(cfg),  # Log config
             }
             
-            # Handle wandb resumption if run ID is available
-            if wandb_run_id is not None:
-                wandb_config['id'] = wandb_run_id
-                wandb_config['resume'] = 'allow'  # Resume if possible, otherwise start new run
-                spuv.info(f"Configuring wandb to resume run ID: {wandb_run_id}")
-                
-                # CRITICAL: Clean up stale wandb local cache to prevent old un-synced
-                # metrics from being flushed into the resumed run. When a previous session
-                # was killed without wandb.finish(), its local cache contains un-synced data
-                # that gets interleaved with new data at incorrect step numbers.
-                import glob as glob_module
-                wandb_dir = wandb_config.get('dir', '.')
-                stale_dirs = glob_module.glob(os.path.join(wandb_dir, 'wandb', f'*-{wandb_run_id}'))
-                for stale_dir in stale_dirs:
-                    if os.path.isdir(stale_dir):
-                        spuv.info(f"Cleaning stale wandb cache to prevent data oscillation: {stale_dir}")
-                        import shutil
-                        shutil.rmtree(stale_dir, ignore_errors=True)
-            
             # Override with custom wandb settings from config if provided
             if hasattr(cfg, 'wandb') and cfg.wandb:
                 # Update with custom settings, preserving defaults for unspecified fields
@@ -299,11 +282,37 @@ def main(args, extras) -> None:
                 elif cfg.custom_output_dir:
                     # Use custom output directory for wandb if specified
                     wandb_config['dir'] = os.path.join(cfg.trial_dir, "wandb")
-                # Pass through any other wandb settings (except id and resume which are handled above)
+
+            # Handle wandb resumption if run ID is available
+            if wandb_run_id is not None:
+                wandb_config['id'] = wandb_run_id
+                wandb_config['resume'] = 'allow'  # Resume if possible, otherwise start new run
+                spuv.info(f"Configuring wandb to resume run ID: {wandb_run_id}")
+
+                # CRITICAL: Clean up stale wandb local cache to prevent old un-synced
+                # metrics from being flushed into the resumed run. When a previous session
+                # was killed without wandb.finish(), its local cache contains un-synced data
+                # that gets interleaved with new data at incorrect step numbers.
+                # NOTE: wandb_config['dir'] must be resolved BEFORE this cleanup so we
+                # search the same directory that the previous run wrote its cache to.
+                import glob as glob_module
+                import shutil
+                wandb_dir = wandb_config.get('dir', '.')
+                stale_dirs = glob_module.glob(os.path.join(wandb_dir, 'wandb', f'*-{wandb_run_id}'))
+                # Also search the default ./wandb/ in case dir was not set in a previous run
+                if wandb_dir != '.':
+                    stale_dirs += glob_module.glob(os.path.join('.', 'wandb', f'*-{wandb_run_id}'))
+                for stale_dir in stale_dirs:
+                    if os.path.isdir(stale_dir):
+                        spuv.info(f"Cleaning stale wandb cache to prevent data oscillation: {stale_dir}")
+                        shutil.rmtree(stale_dir, ignore_errors=True)
+
+            # Pass through any remaining wandb settings (except id and resume which are handled above)
+            if hasattr(cfg, 'wandb') and cfg.wandb:
                 for key, value in cfg.wandb.items():
                     if key not in ['project', 'name', 'entity', 'dir', 'config', 'id', 'resume']:
                         wandb_config[key] = value
-            
+
             wandb_logger = WandbLogger(**wandb_config)
             system._wandb_logger = wandb_logger
             # Set the wandb run ID in the system for future checkpoints
@@ -337,14 +346,20 @@ def main(args, extras) -> None:
                     metrics = _add_prefix(metrics, wl._prefix, wl.LOGGER_JOIN_CHAR)
                     epoch = sys_ref.current_epoch
                     global_step = sys_ref.global_step
-                    step_val = step if step is not None else global_step
+                    # ALWAYS use global_step for trainer/global_step, never the `step`
+                    # arg from PL. PL calls log_metrics(metrics, step=current_epoch)
+                    # for on_epoch=True metrics — if we used that epoch number as the
+                    # trainer/global_step value, W&B would see e.g. step=3 after having
+                    # already recorded step=17499 from per-step logs, triggering the
+                    # "step must be monotonically increasing" warning and silently
+                    # dropping validation data.
                     wl.experiment.log(
-                        dict(metrics, **{"trainer/global_step": step_val, "epoch": epoch}),
+                        dict(metrics, **{"trainer/global_step": global_step, "epoch": epoch}),
                     )
                 return _log_metrics
 
             wandb_logger.log_metrics = _make_consistent_step_logger(wandb_logger, system)
-            spuv.info("Patched WandbLogger.log_metrics → no step= (define_metric handles x-axis)")
+            spuv.info("Patched WandbLogger.log_metrics → trainer/global_step always = sys_ref.global_step")
             
             # Register robust shutdown handlers for wandb.
             # The try/finally block in trainer.fit() handles KeyboardInterrupt (SIGINT),

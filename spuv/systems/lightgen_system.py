@@ -296,106 +296,66 @@ class LightGenSystem(TEXGenDiffusion):
         # Visualization with wandb logging
         self.on_check_train(batch, outputs)
         
-        # Log to wandb every N steps
+        # Log to wandb at the same frequency as check_train_every_n_steps
         if hasattr(self, '_wandb_logger') and self._wandb_logger is not None:
-            if self.global_step % 50 == 0:  # Log every 50 steps
-                # Get the denoised prediction (x0) from the model output
-                # Use the proper method to convert v-prediction/noise to x0
-                pred_x0 = self.get_batched_pred_x0(
-                    out[0:1], 
-                    diffusion_data['timesteps'][0:1], 
-                    diffusion_data['noisy_images'][0:1]
-                )
-                
-                # Check if mask-only mode (1 channel) or RGB mode (3 channels)
-                is_mask_only = (pred_x0.shape[1] == 1)
-                
-                # Denormalize from [-1, 1] to [0, 1] for proper visualization
-                pred_img = (pred_x0 * 0.5 + 0.5) * diffusion_data['mask_map'][0:1]
-                gt_img = (diffusion_data['sample_images'][0:1] * 0.5 + 0.5) * diffusion_data['mask_map'][0:1]
-                
-                # Clamp to valid range
-                pred_img = torch.clamp(pred_img, 0, 1)
-                gt_img = torch.clamp(gt_img, 0, 1)
-                
-                # Get input albedo condition from baked_texture (first 3 channels only)
-                albedo_img = None
-                if 'albedo_map' in batch and batch['albedo_map'] is not None:
-                    # Use albedo_map directly (already separate in batch)
-                    albedo = batch['albedo_map'][0:1]  # [1, 3, H, W]
-                    # Albedo is already in [0, 1] range, just apply mask
-                    albedo_vis = albedo * diffusion_data['mask_map'][0:1]
-                    albedo_vis = torch.clamp(albedo_vis, 0, 1)
-                    albedo_img = albedo_vis[0].cpu().permute(1, 2, 0).detach().numpy()
-                
-                # Get thumbnail image condition
-                thumbnail_img = None
-                if 'thumbnail' in batch and batch['thumbnail'] is not None:
-                    thumbnail = batch['thumbnail'][0:1]  # [1, 1, H, W, 3]
-                    if thumbnail.dim() == 5:
-                        thumbnail_img = thumbnail[0, 0]  # [H, W, 3]
-                    else:
-                        thumbnail_img = thumbnail[0]  # [H, W, 3]
-                
-                # Create emission masks using the configured threshold
-                emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
-                
-                # Convert to wandb format
-                import wandb
-                images = []
-                
-                # Add albedo (UV space input condition) first if available
-                if albedo_img is not None:
-                    images.append(wandb.Image(albedo_img.copy(), caption="Input Albedo (UV)"))
-                
-                # Add thumbnail (3D rendered input condition) if available
-                if thumbnail_img is not None:
-                    images.append(wandb.Image(thumbnail_img.cpu().detach().numpy().copy(), caption="Input Rendering"))
-                
-                if is_mask_only:
-                    # MASK-ONLY MODE: Show binary masks
-                    # Repeat single channel to 3 channels for visualization
-                    pred_mask_vis = pred_img.repeat(1, 3, 1, 1)
-                    gt_mask_vis = gt_img.repeat(1, 3, 1, 1)
-                    
-                    # Threshold to binary for visualization
-                    pred_mask_binary = (pred_img > 0.5).float().repeat(1, 3, 1, 1)
-                    gt_mask_binary = (gt_img > 0.5).float().repeat(1, 3, 1, 1)
-                    
-                    images.extend([
-                        wandb.Image(pred_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Mask (continuous)"),
-                        wandb.Image(gt_mask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="GT Mask (continuous)"),
-                        wandb.Image(pred_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Mask (binary, >0.5)"),
-                        wandb.Image(gt_mask_binary[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="GT Mask (binary)"),
-                    ])
-                    del pred_mask_vis, gt_mask_vis, pred_mask_binary, gt_mask_binary
-                else:
-                    # RGB MODE: Show emission and masks
-                    # GT emission mask
-                    gt_emission_mask = (gt_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-                    gt_emission_mask = gt_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
-                    
-                    # Predicted emission mask
-                    pred_emission_mask = (pred_img.max(dim=1, keepdim=True)[0] > emissive_threshold).float()
-                    pred_emission_mask = pred_emission_mask.repeat(1, 3, 1, 1)  # Repeat to 3 channels
-                    
-                    images.extend([
-                        wandb.Image(pred_img[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Predicted Emission"),
-                        wandb.Image(gt_img[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption="Ground Truth"),
-                        wandb.Image(gt_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"GT Emission Mask (>{emissive_threshold})"),
-                        wandb.Image(pred_emission_mask[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"Pred Emission Mask (>{emissive_threshold})"),
-                    ])
-                    del gt_emission_mask, pred_emission_mask
-                
+            n = self.cfg.check_train_every_n_steps
+            if n > 0 and self.global_step % n == 0:
                 import wandb as _wandb
                 if _wandb.run is not None:
-                    _wandb.log({"train/predictions": images, "trainer/global_step": self.global_step})
-                # Aggressive cleanup of all visualization tensors
-                del images, pred_x0, pred_img, gt_img
-                if albedo_img is not None:
-                    del albedo_img, albedo, albedo_vis
-                if thumbnail_img is not None:
-                    del thumbnail_img, thumbnail
+                    batch_size = out.shape[0]
+                    emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+                    images = []
+
+                    for i in range(batch_size):
+                        s = f"S{i}"
+
+                        # Denoised prediction for sample i
+                        pred_x0_i = self.get_batched_pred_x0(
+                            out[i:i+1],
+                            diffusion_data['timesteps'][i:i+1],
+                            diffusion_data['noisy_images'][i:i+1]
+                        )
+                        is_mask_only = (pred_x0_i.shape[1] == 1)
+
+                        mask_i = diffusion_data['mask_map'][i:i+1]
+                        pred_img_i = torch.clamp((pred_x0_i * 0.5 + 0.5) * mask_i, 0, 1)
+                        gt_img_i   = torch.clamp((diffusion_data['sample_images'][i:i+1] * 0.5 + 0.5) * mask_i, 0, 1)
+
+                        # Albedo condition
+                        if 'albedo_map' in batch and batch['albedo_map'] is not None:
+                            albedo_vis_i = torch.clamp(batch['albedo_map'][i:i+1] * mask_i, 0, 1)
+                            images.append(_wandb.Image(albedo_vis_i[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} Input Albedo (UV)"))
+
+                        # Thumbnail condition
+                        if 'thumbnail' in batch and batch['thumbnail'] is not None:
+                            thumb = batch['thumbnail'][i]  # [1, H, W, 3] or [H, W, 3]
+                            if thumb.dim() == 4:
+                                thumb = thumb[0]
+                            images.append(_wandb.Image(thumb.cpu().detach().numpy().copy(), caption=f"{s} Input Rendering"))
+
+                        if is_mask_only:
+                            pred_vis = pred_img_i.repeat(1, 3, 1, 1)
+                            gt_vis   = gt_img_i.repeat(1, 3, 1, 1)
+                            pred_bin = (pred_img_i > 0.5).float().repeat(1, 3, 1, 1)
+                            gt_bin   = (gt_img_i   > 0.5).float().repeat(1, 3, 1, 1)
+                            images.extend([
+                                _wandb.Image(pred_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} Predicted Mask (continuous)"),
+                                _wandb.Image(gt_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(),   caption=f"{s} GT Mask (continuous)"),
+                                _wandb.Image(pred_bin[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} Predicted Mask (binary, >0.5)"),
+                                _wandb.Image(gt_bin[0].cpu().permute(1, 2, 0).detach().numpy().copy(),   caption=f"{s} GT Mask (binary)"),
+                            ])
+                        else:
+                            gt_emask_i   = (gt_img_i.max(dim=1, keepdim=True)[0]   > emissive_threshold).float().repeat(1, 3, 1, 1)
+                            pred_emask_i = (pred_img_i.max(dim=1, keepdim=True)[0] > emissive_threshold).float().repeat(1, 3, 1, 1)
+                            images.extend([
+                                _wandb.Image(pred_img_i[0].cpu().permute(1, 2, 0).detach().numpy().copy(),   caption=f"{s} Predicted Emission"),
+                                _wandb.Image(gt_img_i[0].cpu().permute(1, 2, 0).detach().numpy().copy(),     caption=f"{s} Ground Truth"),
+                                _wandb.Image(gt_emask_i[0].cpu().permute(1, 2, 0).detach().numpy().copy(),   caption=f"{s} GT Emission Mask (>{emissive_threshold})"),
+                                _wandb.Image(pred_emask_i[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} Pred Emission Mask (>{emissive_threshold})"),
+                            ])
+
+                    _wandb.log({"train/predictions": images, "trainer/global_step": self.global_step, "epoch": self.current_epoch})
+                    del images
         
         # Explicit cleanup of large intermediate tensors after every training step
         del out, addition_info, outputs

@@ -65,7 +65,7 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
         })
     else:
         print(f"   Warning: Config not found at {config_path}, using default")
-        cfg = OmegaConf.load("configs/lightgen_pointuv_256_batch2.yaml")
+        cfg = OmegaConf.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs/lightgen_pointuv_256_batch32_pretrained.yaml"))
     
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     print(f"   ✓ Checkpoint loaded (epoch {checkpoint.get('epoch', 'unknown')})")
@@ -453,7 +453,7 @@ def create_overall_visualization(all_results, output_dir):
 
 
 if __name__ == "__main__":
-    checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/outputs/pointuv_256res_batch8@20260115-235332/ckpts/last.ckpt"
+    checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/ckpts/epoch=599-step=17400.ckpt"
     
     # Test set samples
     sample_ids = [
@@ -469,6 +469,6 @@ if __name__ == "__main__":
         "f42e52eb50c041cfb4e29310e4a95e33",
     ]
     
-    output_dir = "inference_outputs"
+    output_dir = "inference_outputs_epoch599"
     
     inference_samples(checkpoint_path, sample_ids, output_dir)
