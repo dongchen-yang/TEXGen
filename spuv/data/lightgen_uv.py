@@ -235,8 +235,8 @@ class LightGenDataset(Dataset):
         rough = rough.permute(2, 0, 1)  # [1, 512, 512]
         emission_color = emission_color.permute(2, 0, 1)  # [3, 512, 512]
         
-        # GT emission mask: binary mask where any emission channel > 0 (in [0,1] space)
-        gt_emission_mask = (emission_color.max(dim=0, keepdim=True)[0] > 0).float()  # [1, 512, 512]
+        # GT emission mask: binary mask where any emission channel > threshold (in [0,1] space)
+        gt_emission_mask = (emission_color.max(dim=0, keepdim=True)[0] > 0.001).float()  # [1, 512, 512]
         
         # Normalize emission_color to [-1, 1] for diffusion
         emission_color = emission_color * 2.0 - 1.0
