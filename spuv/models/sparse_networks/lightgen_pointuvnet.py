@@ -112,13 +112,17 @@ class LightGenPointUVNet(PointUVNet):
                 torch.zeros(x_dense.shape[0], 768, device=x_dense.device, dtype=x_dense.dtype)
             ]
 
-        # Concatenate inputs: [noisy_emission, position, material, mask]
+        # Build input list: [noisy_emission, position, material, mask, (optional) gt_emission_mask]
         # x_dense: [B, 3, H, W] - noisy emission
         # position_map: [B, 3, H, W] - 3D positions
         # baked_texture: [B, 5, H, W] - albedo(3) + metallic(1) + roughness(1)
         # baked_weights: [B, 1, H, W] - occupancy mask
-        # Total: 3 + 3 + 5 + 1 = 12 channels
-        x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
+        # gt_emission_mask: [B, 1, H, W] - binary GT emission mask (optional)
+        concat_list = [x_dense, position_map, baked_texture, baked_weights]
+        gt_emission_mask = image_info.get('gt_emission_mask', None)
+        if gt_emission_mask is not None:
+            concat_list.append(gt_emission_mask)
+        x_concat = torch.cat(concat_list, dim=1)
         x_dense = self.input_conv(x_concat) * mask_map
         
         if torch.isnan(x_dense).any():

@@ -235,6 +235,9 @@ class LightGenDataset(Dataset):
         rough = rough.permute(2, 0, 1)  # [1, 512, 512]
         emission_color = emission_color.permute(2, 0, 1)  # [3, 512, 512]
         
+        # GT emission mask: binary mask where any emission channel > 0 (in [0,1] space)
+        gt_emission_mask = (emission_color.max(dim=0, keepdim=True)[0] > 0).float()  # [1, 512, 512]
+        
         # Normalize emission_color to [-1, 1] for diffusion
         emission_color = emission_color * 2.0 - 1.0
         
@@ -256,6 +259,7 @@ class LightGenDataset(Dataset):
             metal = F.interpolate(metal.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             rough = F.interpolate(rough.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             emission_color = F.interpolate(emission_color.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
+            gt_emission_mask = F.interpolate(gt_emission_mask.unsqueeze(0), size=(target_h, target_w), mode='nearest').squeeze(0)
             input_tensor = F.interpolate(input_tensor.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
         
         # Construct a mesh with proper UV coordinates for feature baking
@@ -334,6 +338,7 @@ class LightGenDataset(Dataset):
             "rough_map": rough,  # [1, H, W]
             "mask_map": occupancy,  # [1, H, W]
             "gt_emission": emission_color,  # [3, H, W], normalized to [-1, 1]
+            "gt_emission_mask": gt_emission_mask,  # [1, H, W], binary mask where emission > 0
             
             # Pre-rendered thumbnail for CLIP
             "thumbnail": thumbnail,  # [1, 224, 224, 3] or None

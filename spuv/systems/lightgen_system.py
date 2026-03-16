@@ -95,6 +95,9 @@ class LightGenSystem(TEXGenDiffusion):
             albedo_for_clip = albedo_map.permute(0, 2, 3, 1).unsqueeze(1)  # [B, 1, H, W, 3]
             image_embeddings = self.image_tokenizer.process_image(albedo_for_clip).to(dtype=self.dtype)
         
+        # GT emission mask (binary, where emission > 0) - used as input condition when available
+        gt_emission_mask = batch.get('gt_emission_mask', None)  # [B, 1, H, W] or None
+        
         condition_info = {
             'mesh': batch['mesh'],
             'mvp_mtx_cond': batch['mvp_mtx_cond'],
@@ -106,6 +109,7 @@ class LightGenSystem(TEXGenDiffusion):
             'metal_map': metal_map,
             'rough_map': rough_map,
             'normal_map': normal_map,
+            'gt_emission_mask': gt_emission_mask,
         }
         
         return condition_info
@@ -144,12 +148,16 @@ class LightGenSystem(TEXGenDiffusion):
         baked_texture = torch.cat([albedo_map, metal_map, rough_map], dim=1)  # [B, 5, H, W]
         baked_weights = mask_map     # [B, 1, H, W]
         
+        # GT emission mask condition (if available)
+        gt_emission_mask = condition.get("gt_emission_mask", None)
+        
         # Prepare image info with conditioning
         image_info = {
             'mvp_mtx_cond': condition.get("mvp_mtx_cond"),
             'rgb_cond': condition.get("rgb_cond"),  # Contains all material properties [B, 1, H, W, 8]
             'baked_texture': baked_texture,  # For PointUVNet: pre-baked material in UV space
             'baked_weights': baked_weights,  # For PointUVNet: occupancy mask
+            'gt_emission_mask': gt_emission_mask,  # [B, 1, H, W] binary mask or None
         }
 
         # Get batch size from mask_map if input_tensor is None (eval mode)
@@ -332,6 +340,12 @@ class LightGenSystem(TEXGenDiffusion):
                             if thumb.dim() == 4:
                                 thumb = thumb[0]
                             images.append(_wandb.Image(thumb.cpu().detach().numpy().copy(), caption=f"{s} Input Rendering"))
+
+                        # GT emission mask condition
+                        if 'gt_emission_mask' in batch and batch['gt_emission_mask'] is not None:
+                            gt_emask_cond = batch['gt_emission_mask'][i:i+1]  # [1, 1, H, W]
+                            gt_emask_vis = gt_emask_cond.repeat(1, 3, 1, 1)  # [1, 3, H, W]
+                            images.append(_wandb.Image(gt_emask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} GT Emission Mask (condition)"))
 
                         if is_mask_only:
                             pred_vis = pred_img_i.repeat(1, 3, 1, 1)
