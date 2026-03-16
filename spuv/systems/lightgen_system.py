@@ -343,7 +343,7 @@ class LightGenSystem(TEXGenDiffusion):
 
                         # GT emission mask condition
                         if 'gt_emission_mask' in batch and batch['gt_emission_mask'] is not None:
-                            gt_emask_cond = batch['gt_emission_mask'][i:i+1]  # [1, 1, H, W]
+                            gt_emask_cond = batch['gt_emission_mask'][i:i+1] * mask_i  # [1, 1, H, W]
                             gt_emask_vis = gt_emask_cond.repeat(1, 3, 1, 1)  # [1, 3, H, W]
                             images.append(_wandb.Image(gt_emask_vis[0].cpu().permute(1, 2, 0).detach().numpy().copy(), caption=f"{s} GT Emission Mask (condition)"))
 
