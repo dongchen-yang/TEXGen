@@ -485,6 +485,53 @@ class LightGenSystem(TEXGenDiffusion):
                     dark_ratio = dark_mask.sum() / (mask.sum() + 1e-8)
                     self.log('train/dark_ratio', dark_ratio, on_step=True, on_epoch=False, prog_bar=False)
         
+        # Predicted-emission mask classification loss
+        # GT mask = uv_mask AND (gt_emission > mask_cls_threshold)
+        # Predicted mask = threshold pred_x0 emission at mask_cls_threshold (soft via BCE on continuous value)
+        lambda_pred_mask_cls = self.cfg.loss.diffusion_loss_dict.get('lambda_pred_mask_cls', 0.0)
+        if lambda_pred_mask_cls > 0:
+            mask_cls_threshold = self.cfg.loss.diffusion_loss_dict.get('mask_cls_threshold', 0.01)
+
+            # Reconstruct predicted x0 from velocity: x0 = v + noise
+            pred_x0 = out + noise
+            pred_emission_01 = (pred_x0 + 1.0) / 2.0  # [B, C, H, W] in [0, 1]
+
+            # Predicted mask: max over channels -> continuous value in [0, 1], zeroed outside UV islands
+            if pred_emission_01.shape[1] == 1:
+                pred_mask_raw = pred_emission_01 * mask
+            else:
+                pred_mask_raw = pred_emission_01.max(dim=1, keepdim=True)[0] * mask  # [B, 1, H, W]
+
+            # GT mask: uv_mask AND (gt_emission > threshold)
+            gt_emission_01 = (sample_images + 1.0) / 2.0
+            if gt_emission_01.shape[1] == 1:
+                gt_emission_max = gt_emission_01
+            else:
+                gt_emission_max = gt_emission_01.max(dim=1, keepdim=True)[0]  # [B, 1, H, W]
+            gt_mask_cls = (gt_emission_max > mask_cls_threshold).float() * mask  # uv_mask AND emission>thresh
+
+            # Convert continuous prediction to logits for BCE: logit(p) = log(p / (1-p))
+            pred_clamped = torch.clamp(pred_mask_raw, 1e-7, 1.0 - 1e-7)
+            pred_logits = torch.log(pred_clamped / (1.0 - pred_clamped))
+
+            # BCE classification loss, only within valid UV regions
+            bce_cls = F.binary_cross_entropy_with_logits(
+                pred_logits * mask,
+                gt_mask_cls,
+                reduction='none',
+            )
+            mask_cls_loss = (bce_cls * mask).sum() / (mask.sum() + 1e-8)
+            loss_dict['pred_mask_cls_bce'] = mask_cls_loss * lambda_pred_mask_cls
+
+            if self.training:
+                pred_mask_binary = (torch.sigmoid(pred_logits) > 0.5).float() * mask
+                intersection = (pred_mask_binary * gt_mask_cls).sum()
+                union = ((pred_mask_binary + gt_mask_cls) > 0).float().sum()
+                iou = intersection / (union + 1e-8)
+                self.log('train/pred_mask_cls_iou', iou, on_step=True, on_epoch=False, prog_bar=True)
+                self.log('train/pred_mask_cls_gt_ratio', gt_mask_cls.sum() / (mask.sum() + 1e-8),
+                         on_step=True, on_epoch=False, prog_bar=False)
+
         # Emission mask prediction loss
         # Supports two modes:
         # 1. out_channels=3: Derive mask from RGB max

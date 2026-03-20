@@ -117,10 +117,11 @@ class LightGenPointUVNet(PointUVNet):
         # position_map: [B, 3, H, W] - 3D positions
         # baked_texture: [B, 5, H, W] - albedo(3) + metallic(1) + roughness(1)
         # baked_weights: [B, 1, H, W] - occupancy mask
-        # gt_emission_mask: [B, 1, H, W] - binary GT emission mask (optional)
+        # gt_emission_mask: [B, 1, H, W] - binary GT emission mask (optional, requires in_channels=13)
         concat_list = [x_dense, position_map, baked_texture, baked_weights]
+        base_channels = sum(t.shape[1] for t in concat_list)
         gt_emission_mask = image_info.get('gt_emission_mask', None)
-        if gt_emission_mask is not None:
+        if gt_emission_mask is not None and self.cfg.in_channels > base_channels:
             concat_list.append(gt_emission_mask)
         x_concat = torch.cat(concat_list, dim=1)
         x_dense = self.input_conv(x_concat) * mask_map
