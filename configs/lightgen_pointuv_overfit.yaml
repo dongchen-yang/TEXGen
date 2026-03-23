@@ -1,21 +1,18 @@
 name: lightgen
-tag: "pointuv_overfit_resume_test_subset"
+tag: "pointuv_overfit"
 exp_root_dir: "outputs"
 seed: 42
-use_timestamp: false  # CRITICAL: Disable timestamp for auto-resume to work!
+use_timestamp: false
 
-# Resume configuration - automatically continues from latest checkpoint
-auto_resume: true  # Enable automatic resumption from latest checkpoint
+auto_resume: true
 
-# Custom output directory - test checkpoint/wandb resume functionality (LOCAL)
-# custom_output_dir: "/scratch/dya78/lightgen/overfit_resume_test"  # For cluster
-custom_output_dir: "outputs/overfit_resume_test_subset"  # For local testing
+custom_output_dir: "outputs/overfit_vanilla"
 
-# Data configuration - Single sample for overfitting test (using subsest - note the typo in dir name)
+# Data configuration - Single sample for overfitting test
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
   data_root: "../data/baked_uv_local_subset"
-  parquet_file: "../data/baked_uv_local_subset/df_SomgProc_filtered.parquet"
+  parquet_file: "../data/baked_uv_local_subset/df_SomgProc_emission_filtered.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -27,8 +24,6 @@ data:
   eval_sup_views: 4
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
-  # Single sample for overfitting (using overfit_split_single.json)
-  # Using JSON file for reliable parsing
   train_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
   val_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
   test_indices: "../data/baked_uv_local_subset/overfit_split_single.json"
@@ -43,9 +38,9 @@ data:
 # System configuration
 system_cls: spuv.systems.lightgen_system.LightGenSystem
 system:
-  condition_drop_rate: 0.0  # Disable dropout for overfitting
+  condition_drop_rate: 0.0
   rescale_betas_zero_snr: true
-  use_ema: false  # Disable EMA for faster overfitting
+  use_ema: false
   ema_decay: 0.9999
   val_with_ema: false
   render_background_color: [0.0, 0.0, 0.0]
@@ -54,6 +49,8 @@ system:
   prediction_type: "v_prediction"
   check_train_every_n_steps: 10
   test_save_json: false
+  test_save_mid_result: false
+  cleanup_after_validation_step: true
 
   test_cfg_scale: 2.0
   test_num_steps: 50
@@ -67,25 +64,22 @@ system:
   image_tokenizer:
     pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
 
-  # Backbone: LightGenPointUVNet - SMALL for fast local testing
+  # Backbone: LightGenPointUVNet (small architecture for overfitting)
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
-    # Input channels: noisy_emission(3) + position_map(3) + baked_texture(5) + baked_weights(1) = 12
-    # baked_texture = albedo(3) + metallic(1) + roughness(1)
     in_channels: 12
     out_channels: 3
-    
-    # SMALLER architecture for faster local testing
+
     num_layers: [1, 1, 1]
     point_block_num: [1, 1, 2]
     block_out_channels: [32, 128, 256]
     dropout: [0.0, 0.0, 0.0]
-    
+
     block_type: ["uv", "point_uv", "uv_dit"]
     voxel_size: [0.01, 0.02, 0.05]
     window_size: [0, 128, 128]
     num_heads: [4, 4, 8]
-    
+
     skip_input: true
     skip_type: "adaptive"
     use_uv_head: true
@@ -95,8 +89,8 @@ system:
     diffusion_loss_dict:
       lambda_mse: 1.0
       lambda_l1: 0.5
-      lambda_dark_region: 0.0  # Set to >0 to enable dark region loss (e.g., 0.5)
-      emissive_threshold: 0.001  # Threshold for detecting dark regions
+      lambda_dark_region: 0.0
+      emissive_threshold: 0.001
     render_loss_dict:
       lambda_render_lpips: 0.0
       lambda_render_mse: 0.0
@@ -104,11 +98,11 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer - aggressive LR for fast overfitting
+  # Optimizer
   optimizer:
     name: AdamW
     args:
-      lr: 5e-4  # Original LR for aggressive overfitting
+      lr: 5e-4
       betas: [0.9, 0.999]
       weight_decay: 0.0
 
@@ -120,30 +114,27 @@ system:
       T_max: 10000
       eta_min: 1e-6
 
-# Trainer configuration - FAST for local testing
+# Trainer configuration
 trainer:
-  max_epochs: 10000  # Very short for quick local testing
-  check_val_every_n_epoch: 5  # Validate frequently
+  max_epochs: 10000
+  check_val_every_n_epoch: 5
   num_sanity_val_steps: 1
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
-  log_every_n_steps: 1  # Must be 1 when batch count per epoch == 1
-  # Note: accelerator and devices are set by launch.py based on --gpu flag
+  log_every_n_steps: 1
 
-# Checkpoint configuration - ENABLED for testing resume (save frequently for testing)
+# Checkpoint configuration
 checkpoint:
-  save_last: true  # Save last.ckpt for auto-resume testing
-  save_top_k: 2  # Save top 2 checkpoints
-  every_n_epochs: 5  # Save checkpoint every 5 epochs
+  save_last: true
+  save_top_k: 2
+  every_n_epochs: 5
   monitor: "val/psnr"
   mode: "max"
-  save_on_train_epoch_end: false  # Wait for validation before saving
+  save_on_train_epoch_end: false
 
 # Wandb configuration (use --wandb flag to enable)
 wandb:
-  project: "LightGen"  # Wandb project name
-  # entity: "your_team_name"  # Optional: your wandb team/username
-  tags: ["overfit", "resume_test", "checkpoint_test", "subset"]  # Tags for organization
-  notes: "Testing checkpoint resume, wandb continuation, LR scheduler restoration (local subset)"
-
+  project: "LightGen"
+  tags: ["overfit", "vanilla"]
+  notes: "Vanilla overfit test. Single sample, small architecture, 10k epochs."

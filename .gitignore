@@ -26,3 +26,7 @@ videos/
 
 # Python version management
 .python-version
+
+# Generated comparison outputs
+comparison_overfit/
+render_outputs/

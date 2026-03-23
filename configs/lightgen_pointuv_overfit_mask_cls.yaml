@@ -2,9 +2,8 @@ name: lightgen
 tag: "pointuv_overfit_mask_cls"
 exp_root_dir: "outputs"
 seed: 42
-use_timestamp: false  # CRITICAL: Disable timestamp for auto-resume to work!
+use_timestamp: false
 
-# Resume configuration - automatically continues from latest checkpoint
 auto_resume: true
 
 custom_output_dir: "outputs/overfit_mask_cls"
@@ -39,9 +38,9 @@ data:
 # System configuration
 system_cls: spuv.systems.lightgen_system.LightGenSystem
 system:
-  condition_drop_rate: 0.0  # Disable dropout for overfitting
+  condition_drop_rate: 0.0
   rescale_betas_zero_snr: true
-  use_ema: false  # Disable EMA for faster overfitting
+  use_ema: false
   ema_decay: 0.9999
   val_with_ema: false
   render_background_color: [0.0, 0.0, 0.0]
@@ -65,14 +64,12 @@ system:
   image_tokenizer:
     pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
 
-  # Backbone: SMALL for fast local testing
+  # Backbone: LightGenPointUVNet (small architecture for overfitting)
   backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
   backbone:
-    # Input channels: noisy_emission(3) + position_map(3) + baked_texture(5) + baked_weights(1) = 12
     in_channels: 12
     out_channels: 3
 
-    # SMALLER architecture for faster local testing
     num_layers: [1, 1, 1]
     point_block_num: [1, 1, 2]
     block_out_channels: [32, 128, 256]
@@ -94,7 +91,7 @@ system:
       lambda_l1: 0.5
       lambda_dark_region: 0.0
       emissive_threshold: 0.001
-      # Mask classification loss
+      # --- VARIANT: mask classification loss ---
       lambda_pred_mask_cls: 1.0
       mask_cls_threshold: 0.01
     render_loss_dict:
@@ -104,7 +101,7 @@ system:
     use_min_snr_weight: false
     use_vgg: false
 
-  # Optimizer - aggressive LR for fast overfitting
+  # Optimizer
   optimizer:
     name: AdamW
     args:
@@ -120,7 +117,7 @@ system:
       T_max: 10000
       eta_min: 1e-6
 
-# Trainer configuration - FAST for local testing
+# Trainer configuration
 trainer:
   max_epochs: 10000
   check_val_every_n_epoch: 5
@@ -128,7 +125,7 @@ trainer:
   precision: bf16-mixed
   gradient_clip_val: 1.0
   num_nodes: 1
-  log_every_n_steps: 1  # Must be 1 when batch count per epoch == 1
+  log_every_n_steps: 1
 
 # Checkpoint configuration
 checkpoint:
@@ -143,4 +140,4 @@ checkpoint:
 wandb:
   project: "LightGen"
   tags: ["overfit", "mask_cls_loss"]
-  notes: "Overfit test for mask classification loss: GT mask = uv_mask AND (gt_emission > 0.01), pred mask BCE at 0.01 threshold."
+  notes: "Mask classification loss overfit test. BCE on predicted vs GT emission mask (threshold 0.01)."
