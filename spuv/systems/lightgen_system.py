@@ -81,12 +81,15 @@ class LightGenSystem(TEXGenDiffusion):
         # Using consistent prompt rather than scene_id hashes which carry no semantic meaning
         prompt = ["emission generation"] * B
         
-        # Generate text embeddings
-        text_embeddings = self.image_tokenizer.process_text(prompt).to(dtype=self.dtype)
-        
-        # Use pre-rendered thumbnail for CLIP image embedding (from batch)
-        # These are pre-computed rendered views stored in processed_data/emissive_thumbnails/
-        if 'thumbnail' in batch:
+        # Generate text embeddings (cache since prompt is always "emission generation")
+        if not hasattr(self, '_cached_text_embedding'):
+            self._cached_text_embedding = self.image_tokenizer.process_text(["emission generation"]).to(dtype=self.dtype)  # [1, 768]
+        text_embeddings = self._cached_text_embedding.expand(B, -1)
+
+        # Use precomputed CLIP image embedding if available, otherwise encode online
+        if batch.get('clip_image_embedding') is not None:
+            image_embeddings = batch['clip_image_embedding'].to(dtype=self.dtype)  # [B, 768]
+        elif batch.get('thumbnail') is not None:
             rendered_thumbnail = batch['thumbnail']  # [B, 1, H, W, 3]
             image_embeddings = self.image_tokenizer.process_image(rendered_thumbnail).to(dtype=self.dtype)
         else:

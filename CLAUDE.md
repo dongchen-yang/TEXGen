@@ -253,6 +253,55 @@ Full training checkpoints go to `/scratch/dya78/lightgen/TEXGen/output_emission_
 - **Conda env**: `texgen`
 - **Critical env var**: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (prevents OOM from fragmentation)
 
+## Experiment Findings
+
+### Overfit Test — 3 Baseline Variants (2026-03-23)
+
+Single-sample overfit comparison of Vanilla, GT Mask Cond, and Mask Cls Loss (λ=1.0).
+
+**Results (Best / Final PSNR):**
+| Variant | Best PSNR | Final PSNR (10k) |
+|---------|-----------|-------------------|
+| GT Mask Cond | **44.53 dB** | **43.24 dB** |
+| Vanilla | 41.32 dB | 39.09 dB |
+| Mask Cls (λ=1.0) | 37.30 dB | 31.18 dB |
+
+**Key Takeaways:**
+1. **GT Mask Cond wins clearly** — +3.2 dB over vanilla. The GT emission mask as an extra input channel is a strong oracle signal.
+2. **Mask Cls Loss (λ=1.0) hurts overfitting** — peaks at 37.3 dB (worse than vanilla 41.3 dB) and diverges badly in the second half of training (drops to 31.2 dB). The BCE loss destabilizes training at this weight.
+3. **Vanilla is the most stable** — steady convergence, mild degradation after peak (41.3→39.1 dB).
+4. **Mask Cls needs lambda tuning** — λ=1.0 is too high. This motivated the lambda sweep below.
+
+### Mask Cls Lambda Sweep (2026-03-23)
+
+Sweep of `lambda_pred_mask_cls` ∈ {0.0 (vanilla), 0.01, 0.1, 1.0, 10.0}. All other settings identical.
+
+**Results (Best / Final PSNR):**
+| Lambda | Best PSNR | @ Step | Final PSNR (10k) |
+|--------|-----------|--------|-------------------|
+| **0.01** | **41.80 dB** | 8,414 | **40.01 dB** |
+| 0.0 (vanilla) | 41.32 dB | 7,884 | 39.09 dB |
+| 0.1 | 41.53 dB | 5,809 | 34.96 dB |
+| 1.0 | 37.30 dB | 5,854 | 31.18 dB |
+| 10.0 | 33.20 dB | 4,859 | 27.25 dB |
+
+**Key Takeaways:**
+1. **λ=0.01 is the sweet spot** — slightly outperforms vanilla (41.80 vs 41.32 dB peak, 40.01 vs 39.09 dB final) while achieving perfect mask IoU=1.0. The mask prediction head is essentially free.
+2. **Higher λ hurts reconstruction monotonically** — PSNR degrades as λ increases: ~40 dB (0.01) → ~35 dB (0.1) → ~31 dB (1.0) → ~27 dB (10.0).
+3. **Mask IoU saturates at 1.0 for all lambdas** by step ~8k, so even λ=0.01 is sufficient to learn the mask perfectly.
+4. **λ=0.01 and vanilla are the most stable** at end of training (~−1.8 dB drop from peak). Higher lambdas degrade much more (λ=1.0 drops −6.1 dB).
+5. **Recommendation: Use λ=0.01** as the default for mask cls loss — vanilla-level PSNR + a usable emission mask predictor.
+
+### Mask Cls Lambda Sweep Configs
+| Lambda | Config |
+|--------|--------|
+| 0.01 | `lightgen_pointuv_overfit_mask_cls_lambda001.yaml` |
+| 0.1 | `lightgen_pointuv_overfit_mask_cls_lambda01.yaml` |
+| 1.0 | `lightgen_pointuv_overfit_mask_cls.yaml` |
+| 10.0 | `lightgen_pointuv_overfit_mask_cls_lambda10.yaml` |
+
+Sweep script: `run_mask_cls_lambda_sweep.sh`
+
 ## Hardware Requirements
 - Training (full): >=40GB VRAM (A100), bf16-mixed precision
 - Inference: >=24GB VRAM

@@ -82,6 +82,7 @@ class LightGenDataModuleConfig:
     eval_sup_views: int = 4
 
     vertex_transformation: bool = False
+    use_precomputed_clip: bool = False  # Load precomputed CLIP embeddings instead of raw thumbnails
 
 
 class LightGenDataset(Dataset):
@@ -202,17 +203,23 @@ class LightGenDataset(Dataset):
         emission_color_np = npz_data['emission_color'].copy()
         npz_data.close()  # Explicitly close to free file handles
         
-        # Load pre-rendered thumbnail for CLIP conditioning (from local data directory)
-        # Thumbnails are stored in data/baked_uv_local/thumbnails/
-        thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
+        # Load CLIP conditioning: either precomputed embedding or raw thumbnail
         thumbnail = None
-        if os.path.exists(thumbnail_path):
-            with Image.open(thumbnail_path) as thumbnail_pil:
-                thumbnail_img = thumbnail_pil.convert('RGB')
-                # Resize to fixed size (224x224) for batching - CLIP will resize anyway
-                thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
-                thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3], normalize to [0, 1]
-                thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
+        clip_image_embedding = None
+        if self.cfg.use_precomputed_clip:
+            # Load precomputed CLIP image embedding
+            emb_path = os.path.join(self.cfg.data_root, "clip_embeddings", f"{sample_id}.pt")
+            if os.path.exists(emb_path):
+                clip_image_embedding = torch.load(emb_path, weights_only=True)  # [768]
+        else:
+            # Load raw thumbnail for online CLIP encoding
+            thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
+            if os.path.exists(thumbnail_path):
+                with Image.open(thumbnail_path) as thumbnail_pil:
+                    thumbnail_img = thumbnail_pil.convert('RGB')
+                    thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
+                    thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3]
+                    thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
         
         # Extract relevant data and convert to torch tensors
         occupancy = torch.from_numpy(occupancy_np).float()  # [512, 512, 1]
@@ -341,8 +348,9 @@ class LightGenDataset(Dataset):
             "gt_emission": emission_color,  # [3, H, W], normalized to [-1, 1]
             "gt_emission_mask": gt_emission_mask,  # [1, H, W], binary mask where emission > 0
             
-            # Pre-rendered thumbnail for CLIP
-            "thumbnail": thumbnail,  # [1, 224, 224, 3] or None
+            # CLIP conditioning (one of these will be non-None)
+            "thumbnail": thumbnail,  # [1, 224, 224, 3] or None (raw image for online encoding)
+            "clip_image_embedding": clip_image_embedding,  # [768] or None (precomputed)
             
             # Mesh and camera info
             "mesh": mesh,
@@ -443,9 +451,13 @@ class LightGenDataModule(pl.LightningDataModule):
         # Stack all tensors
         collated = {}
         for key in batch[0].keys():
-            if isinstance(batch[0][key], torch.Tensor):
+            first = batch[0][key]
+            if first is None:
+                # All items should be None (e.g. thumbnail when using precomputed clip)
+                collated[key] = None
+            elif isinstance(first, torch.Tensor):
                 collated[key] = torch.stack([item[key] for item in batch], dim=0)
-            elif isinstance(batch[0][key], dict):
+            elif isinstance(first, dict):
                 # For mesh dict, keep as list
                 collated[key] = [item[key] for item in batch]
             else:
