@@ -222,14 +222,18 @@ checkpoint.monitor            # val/psnr
 | Setting | Overfit | Full |
 |---------|---------|------|
 | Architecture | 3-stage (small) | 5-stage (full) |
-| batch_size | 1 | 32 |
-| condition_drop_rate | 0.0 | 0.1 |
-| use_ema | false | true |
-| weight_decay | 0.0 | 0.01 |
+| batch_size | 1 or 10 | 32 |
+| condition_drop_rate | 0.1 | 0.1 |
+| use_ema | true (decay=0.9999) | true (decay=0.9999) |
+| val_with_ema | true | true |
+| weight_decay | 0.01 | 0.01 |
+| dropout | [0.0, 0.0, 0.1] | [0.0, 0.0, 0.0, 0.0, 0.1] |
 | max_epochs | 10000 | 5000 |
-| check_val_every_n_epoch | 5 | 100 |
-| data split | overfit_split_single.json | data_splits_emission_filtered.json |
+| check_val_every_n_epoch | 100 | 100 |
+| data split | overfit_split_single.json or overfit_split_10.json | data_splits_emission_filtered.json |
 | checkpoint.dirpath | local (outputs/) | cluster (/scratch/) |
+
+**Important:** All new experiments (including overfit) must use the full regularization suite (allreg): EMA, dropout, weight decay, and condition dropout. The Mar26 allreg experiment showed +4–5 dB improvement and eliminated training degradation. Legacy no-reg overfit configs are deprecated.
 
 ## Output Structure
 ```

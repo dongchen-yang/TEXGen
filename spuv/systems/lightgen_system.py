@@ -518,11 +518,27 @@ class LightGenSystem(TEXGenDiffusion):
             pred_logits = torch.log(pred_clamped / (1.0 - pred_clamped))
 
             # BCE classification loss, only within valid UV regions
-            bce_cls = F.binary_cross_entropy_with_logits(
-                pred_logits * mask,
-                gt_mask_cls,
-                reduction='none',
-            )
+            # Optional class balancing to handle emissive/non-emissive pixel imbalance
+            mask_cls_balanced = self.cfg.loss.diffusion_loss_dict.get('mask_cls_balanced', False)
+            if mask_cls_balanced:
+                # Compute per-batch pos_weight = num_negative / num_positive
+                num_pos = (gt_mask_cls * mask).sum()
+                num_neg = ((1.0 - gt_mask_cls) * mask).sum()
+                pos_weight = torch.clamp(num_neg / (num_pos + 1e-8), min=1.0, max=100.0)
+                bce_cls = F.binary_cross_entropy_with_logits(
+                    pred_logits * mask,
+                    gt_mask_cls,
+                    pos_weight=pos_weight,
+                    reduction='none',
+                )
+                if self.training and self.global_step % 100 == 0:
+                    self.log('train/mask_cls_pos_weight', pos_weight, on_step=True, on_epoch=False)
+            else:
+                bce_cls = F.binary_cross_entropy_with_logits(
+                    pred_logits * mask,
+                    gt_mask_cls,
+                    reduction='none',
+                )
             mask_cls_loss = (bce_cls * mask).sum() / (mask.sum() + 1e-8)
             loss_dict['pred_mask_cls_bce'] = mask_cls_loss * lambda_pred_mask_cls
 
