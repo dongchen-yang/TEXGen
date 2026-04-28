@@ -329,10 +329,15 @@ def main(args, extras) -> None:
             # the chart x-axis. This avoids the step=epoch approach which silently
             # drops validation data (wandb.log(step=N) advances counter to N+1,
             # so the next call at step=N is rejected as going backwards).
-            _ = wandb_logger.experiment
-            wandb.define_metric("trainer/global_step")
-            wandb.define_metric("*", step_metric="trainer/global_step")
-            spuv.info("Set wandb x-axes: all metrics use trainer/global_step (via define_metric)")
+            #
+            # Rank-zero-only: wandb.init() runs on rank 0 only via WandbLogger.experiment.
+            # On other ranks, the wandb module is the preinit stub and direct calls like
+            # wandb.define_metric raise "must call wandb.init() before". Skip on non-zero ranks.
+            if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+                _ = wandb_logger.experiment
+                wandb.define_metric("trainer/global_step")
+                wandb.define_metric("*", step_metric="trainer/global_step")
+                spuv.info("Set wandb x-axes: all metrics use trainer/global_step (via define_metric)")
 
             # ── Monkey-patch WandbLogger.log_metrics ──────────────────────────
             # Include trainer/global_step and epoch as regular metrics in every
