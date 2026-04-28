@@ -45,11 +45,18 @@ class LightGenSystem(TEXGenDiffusion):
     cfg: Config
 
     def configure(self):
+        import time
+        t0 = time.time()
+        print(f"[stage] LightGenSystem.configure() — building backbone via super() ...", flush=True)
         super().configure()
-        # Initialize image tokenizer for conditioning
+        print(f"[stage] backbone built ({time.time()-t0:.1f}s)", flush=True)
+        # Initialize image tokenizer for conditioning (CLIP — may pull from HF cache).
+        t1 = time.time()
+        print(f"[stage] building image tokenizer ({self.cfg.image_tokenizer_cls}) ...", flush=True)
         self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(
             self.cfg.image_tokenizer
         )
+        print(f"[stage] image tokenizer ready ({time.time()-t1:.1f}s)", flush=True)
         
         # Initialize memory tracker for debugging OOM issues
         from spuv.utils.memory_tracker import init_tracker

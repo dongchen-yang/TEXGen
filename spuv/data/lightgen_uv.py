@@ -399,12 +399,22 @@ class LightGenDataModule(pl.LightningDataModule):
         self.cfg = parse_structured(LightGenDataModuleConfig, cfg)
 
     def setup(self, stage=None):
+        import time
         if stage in [None, "fit"]:
+            t0 = time.time()
+            print(f"[stage] building train dataset (stage={stage}) ...", flush=True)
             self.train_dataset = LightGenDataset(self.cfg, split="train")
+            print(f"[stage] train dataset: {len(self.train_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "fit", "validate"]:
+            t0 = time.time()
+            print(f"[stage] building val dataset ...", flush=True)
             self.val_dataset = LightGenDataset(self.cfg, split="val")
+            print(f"[stage] val dataset: {len(self.val_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "test", "predict"]:
+            t0 = time.time()
+            print(f"[stage] building test dataset ...", flush=True)
             self.test_dataset = LightGenDataset(self.cfg, split="test")
+            print(f"[stage] test dataset: {len(self.test_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
 
     def prepare_data(self):
         pass

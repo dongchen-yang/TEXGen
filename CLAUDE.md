@@ -8,11 +8,11 @@
 
 There are exactly **3 baseline variants**. All other configs (pretrained, unfiltered, bs2, simple U-Net, base) are deprecated and should be ignored.
 
-| Variant | Full Config | Overfit Config | Key Difference |
-|---------|------------|----------------|----------------|
-| **Vanilla** | `lightgen_pointuv_256_batch32_emission_filtered.yaml` | `lightgen_pointuv_overfit.yaml` | Standard 12-ch input, MSE+L1 loss |
-| **GT Mask Cond** | `lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml` | `lightgen_pointuv_overfit_gt_mask_cond.yaml` | 13-ch input (stacks thresholded GT emission mask as extra channel) |
-| **Mask Cls Loss** | `lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml` | `lightgen_pointuv_overfit_mask_cls.yaml` | 12-ch input, adds BCE mask classification loss (`lambda_pred_mask_cls: 1.0`, threshold 0.01) |
+| Variant | 1k Full Config | 74k Scaled Config | Overfit Config | Key Difference |
+|---------|----------------|-------------------|----------------|----------------|
+| **Vanilla** | `lightgen_pointuv_256_batch32_emission_filtered.yaml` | `lightgen_pointuv_256_batch32_emissive_74k.yaml` | `lightgen_pointuv_overfit.yaml` | Standard 12-ch input, MSE+L1 loss |
+| **GT Mask Cond** | `lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml` | _(not yet)_ | `lightgen_pointuv_overfit_gt_mask_cond.yaml` | 13-ch input (stacks thresholded GT emission mask as extra channel) |
+| **Mask Cls Loss** | `lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml` | _(not yet)_ | `lightgen_pointuv_overfit_mask_cls.yaml` | 12-ch input, adds BCE mask classification loss (`lambda_pred_mask_cls: 1.0`, threshold 0.01) |
 
 ## Commands
 
@@ -30,11 +30,22 @@ python launch.py --config configs/lightgen_pointuv_256_batch32_emission_filtered
 python launch.py --config configs/lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml --gpu 0 --train
 python launch.py --config configs/lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml --gpu 0 --train
 
+# Scaled 74k training on fir (4× H100 DDP, per-GPU bs=32, global bs=128)
+python launch.py --config configs/lightgen_pointuv_256_batch32_emissive_74k.yaml --gpu 0,1,2,3 --train --wandb
+
 # With W&B logging
 python launch.py --config <config.yaml> --gpu 0 --train --wandb
 
-# SLURM cluster
+# SLURM cluster (1k baseline on fir; uses ~/scratch baked_uv_local_subset.tar)
 sbatch slurm_train.sh
+
+# SLURM cluster (74k scaled on fir; auto extracts NPZ tars to $SLURM_TMPDIR)
+bash submit_emissive_74k.sh   # wrapper from repo root: ssh fir sbatch <<EOF ...
+# OR directly on fir:
+sbatch slurm_train_74k.sh
+
+# Per-GPU max-batch probe on fir (H100; runs 3 forward+backward steps per bs)
+DATA_ROOT=$SLURM_TMPDIR/baked_uv bash batch_sweep.sh
 ```
 
 ### Testing / Inference
@@ -182,13 +193,39 @@ noisy_emission(3) + position(3) + albedo(3) + metallic(1) + roughness(1) + baked
 ```
 GT Mask Cond variant adds: `+ gt_emission_mask(1) = 13`
 
-### Dataset
-Emission-filtered Objaverse subset: **878 train / 112 val / 109 test** (1099 total, zero-emission samples removed).
+### Datasets
+
+Two scales coexist. Pick based on the config you're running.
+
+**1k emission-filtered** (legacy single-GPU baseline): **878 train / 112 val / 109 test** (1099 total, zero-emission samples removed).
 
 - Parquet indexing: `df_SomgProc_emission_filtered.parquet`
 - Split file: `data_splits_emission_filtered.json`
 - Overfit split: `overfit_split_single.json` (single sample)
-- Data root: `../data/baked_uv_local_subset/` (relative to `TEXGen/`)
+- Data root: `../data/baked_uv_local_subset/` (relative to `TEXGen/`); on workstation a symlink to `/cs/3dlg-falas/.../somages/v1201_homages_512charts/somages/`. Local copy is ~8.5 GB.
+
+**74k emissive-complete** (scaled 4-GPU, 2026-04 onwards): **73,251 train / 112 val / 109 test** (74,353-sample emissive-complete pool; val/test pinned to the 1k baseline for direct PSNR comparability).
+
+- Parquet indexing: `df_SomgProc_final.parquet` (854,287 rows; dataloader filters to `success==True` → 824,858 rows that the indices reference positionally)
+- Split file: `data_processing/annotation/data_splits_emissive_74k_pinned.json` (built by `data_processing/create_splits_74k_pinned.py` — preserves the 1k val/test, excludes 1k-train leakage)
+- Storage layout (post-migration, see "Data Migration" below):
+    - **NPZ tars (training)**: 8 chunks of ~57 GB each, total ~490 GB. `npz_chunk_00.tar … npz_chunk_07.tar`. Each contains `<shard>/<ditem_id>/somage.npz` + `_dproc_*.json`. Per-sample = 2 entries; total = 7×27,885 + 27,864 = 223,059 entries.
+    - **GLB tars (eval / rendering)**: 8 chunks of ~104 GB each, total ~840 GB. `glb_chunk_00.tar … glb_chunk_07.tar`. Each contains `<shard>/<ditem_id>_1024.glb`. Total 74,353 entries.
+- **Locations**:
+    - Jupiter NFS (archive, source of truth): `/cs/3dlg-jupiter-project/lightgen/dataset/{npz,glb}_chunk_*.tar`
+    - Fir Lustre `/scratch` (ready for training): `/home/dya78/scratch/lightgen/data/tars/{npz,glb}_chunk_*.tar`
+- **Job-time staging**: `slurm_train_74k.sh` and `submit_emissive_74k.sh` extract the 8 NPZ tars to `$SLURM_TMPDIR/baked_uv/` (~456 GB extracted) at job start using `detar_progress.py` (parallel-of-8 with single tqdm bar; ~2 min on H100 nodes). GLB tars stay on `/scratch` — only needed for downstream evaluation, not training.
+
+### Data Migration (2026-04-23)
+
+The 74k subset was migrated from `/cs/3dlg-falas/` symlinks to standalone tar archives so it's portable to clusters without 3dlg-falas access (i.e. fir).
+
+- Manifests + drivers under `_staging_migrate/` on the workstation:
+    - `manifests/{npz,glb}_chunk_*.paths` (74,353 ditem_ids resolved to shard/id; 8 chunks of ~9,295 each)
+    - `tar_driver.sh` — builds 8+8 tars on jupiter NFS reading from /cs/3dlg-falas (4h 31m wall time)
+    - `rsync_driver.sh` — pushes tars jupiter→fir over WAN (8h 32m wall time at ~42 MB/s)
+    - `verify_jupiter.sh` — `tar -tf | wc -l` per tar to confirm entry counts
+- Total wall time end-to-end: ~13h 10m. 1.3 TB total on each side. See conversation log of 2026-04-23 for full migration details.
 
 ## Config System
 
@@ -245,7 +282,7 @@ outputs/{name}/{tag}@{timestamp}/
 └── cmd.txt     # command used
 ```
 
-Full training checkpoints go to `/scratch/dya78/lightgen/TEXGen/output_emission_filtered*/`.
+Full training checkpoints go to `/scratch/dya78/lightgen/TEXGen/output_emission_filtered*/` (1k baseline) or `/home/dya78/scratch/lightgen/TEXGen/output_emissive_74k_vanilla/` (74k scaled).
 
 ## Key Implementation Details
 
@@ -307,6 +344,23 @@ Sweep of `lambda_pred_mask_cls` ∈ {0.0 (vanilla), 0.01, 0.1, 1.0, 10.0}. All o
 Sweep script: `run_mask_cls_lambda_sweep.sh`
 
 ## Hardware Requirements
-- Training (full): >=40GB VRAM (A100), bf16-mixed precision
-- Inference: >=24GB VRAM
-- SLURM: 1 GPU, 32G RAM, 8 CPUs, 48h wall time
+
+| Workload | GPU | RAM | CPUs | Wall time |
+|---|---|---|---|---|
+| 1k full training | 1× A100 / H100, ≥40 GB | 32 GB | 8 | 48 h |
+| 74k scaled training | 4× H100 80 GB (DDP) | 1000 GB (full fir node) | 48 | 3-5 days |
+| Inference / eval | 1× ≥24 GB VRAM | — | — | — |
+
+bf16-mixed precision throughout. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is required to avoid fragmentation.
+
+### 74k batch-size sweep on H100 (2026-04-27)
+
+Per-GPU memory probe on a single H100 80 GB (`bash batch_sweep.sh`, 3 train batches per bs, no val/test):
+
+| bs | Peak VRAM | Verdict |
+|---|---|---|
+| 32 | 58.8 GB | ✅ comfortable (~22 GB headroom) |
+| 48 | 80.7 GB | ⚠️ at the cliff (~0.8 GB headroom — outlier samples can OOM) |
+| 64 | OOM during forward | ❌ |
+
+Per-sample marginal ~1.37 GB; static overhead ~14 GB (model + optimizer + CLIP). Default for production: **per-GPU bs=32 → global 128 on 4× H100**. Memory peaks at backward (model accumulates activations + grads at the same instant, then drops back to ~10 GB after `optimizer.step()`).
