@@ -117,7 +117,7 @@ system:
 
 trainer:
   max_epochs: 80
-  check_val_every_n_epoch: 5    # ~11.5k steps between val runs
+  check_val_every_n_epoch: 1    # 4-GPU epoch is ~573 steps (~50 min) — validate each epoch
   num_sanity_val_steps: 2
   precision: bf16-mixed
   gradient_clip_val: 1.0
