@@ -333,7 +333,13 @@ def main(args, extras) -> None:
             # Rank-zero-only: wandb.init() runs on rank 0 only via WandbLogger.experiment.
             # On other ranks, the wandb module is the preinit stub and direct calls like
             # wandb.define_metric raise "must call wandb.init() before". Skip on non-zero ranks.
-            if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            #
+            # NOTE: at this point in launch.py we're BEFORE trainer.fit() — Lightning has
+            # not yet populated LOCAL_RANK from SLURM. Use SLURM_LOCALID (set by srun) or
+            # fall back to LOCAL_RANK / 0 for non-srun launches.
+            _local_rank = int(os.environ.get("SLURM_LOCALID",
+                              os.environ.get("LOCAL_RANK", "0")))
+            if _local_rank == 0:
                 _ = wandb_logger.experiment
                 wandb.define_metric("trainer/global_step")
                 wandb.define_metric("*", step_metric="trainer/global_step")
