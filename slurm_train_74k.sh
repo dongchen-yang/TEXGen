@@ -96,10 +96,11 @@ du -sh "${DATA_ROOT}"
 # Stage thumbnails for CLIP image conditioning. The dataloader looks at
 # data_root/thumbnails/<id>.png; without these it falls back to the albedo UV
 # map (substantively wrong conditioning input). Tar contains
-# emissive_thumbnails/<id>.png; symlink it as `thumbnails`.
+# emissive_thumbnails/<id>.png; --strip-components=1 lands files directly
+# under thumbnails/ to match the dataloader path with no symlink.
 echo "[stage] extracting thumbnail tar (~12 GB)"
-tar -xf "${TARS_DIR}/thumbnails_emissive.tar" -C "${DATA_ROOT}/"
-ln -sf emissive_thumbnails "${DATA_ROOT}/thumbnails"
+mkdir -p "${DATA_ROOT}/thumbnails"
+tar -xf "${TARS_DIR}/thumbnails_emissive.tar" -C "${DATA_ROOT}/thumbnails" --strip-components=1
 echo "[stage] thumbnails: $(find "${DATA_ROOT}/thumbnails/" -name '*.png' | wc -l) PNGs available"
 
 # Verify dataloader prerequisites.
