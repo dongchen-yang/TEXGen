@@ -93,6 +93,15 @@ find "${DATA_ROOT}" -name 'somage.npz' | wc -l
 echo "[stage] disk usage:"
 du -sh "${DATA_ROOT}"
 
+# Stage thumbnails for CLIP image conditioning. The dataloader looks at
+# data_root/thumbnails/<id>.png; without these it falls back to the albedo UV
+# map (substantively wrong conditioning input). Tar contains
+# emissive_thumbnails/<id>.png; symlink it as `thumbnails`.
+echo "[stage] extracting thumbnail tar (~12 GB)"
+tar -xf "${TARS_DIR}/thumbnails_emissive.tar" -C "${DATA_ROOT}/"
+ln -sf emissive_thumbnails "${DATA_ROOT}/thumbnails"
+echo "[stage] thumbnails: $(find "${DATA_ROOT}/thumbnails/" -name '*.png' | wc -l) PNGs available"
+
 # Verify dataloader prerequisites.
 PARQUET="${PROJECT_ROOT}/data/df_SomgProc_final.parquet"
 SPLITS="${PROJECT_ROOT}/data_processing/annotation/data_splits_emissive_74k_pinned.json"
