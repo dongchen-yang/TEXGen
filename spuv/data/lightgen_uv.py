@@ -419,13 +419,14 @@ class LightGenDataModule(pl.LightningDataModule):
     def prepare_data(self):
         pass
 
-    def general_loader(self, dataset, batch_size, shuffle=False):
+    def general_loader(self, dataset, batch_size, shuffle=False, sampler=None):
         num_workers = self.cfg.num_workers
         return DataLoader(
             dataset,
             num_workers=num_workers,
             batch_size=batch_size,
-            shuffle=shuffle,
+            shuffle=shuffle if sampler is None else False,
+            sampler=sampler,
             collate_fn=self.collate_fn,
             persistent_workers=num_workers > 0,
             pin_memory=True,
@@ -433,23 +434,37 @@ class LightGenDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
+        # Train: let Lightning auto-inject DistributedSampler under DDP so each
+        # rank sees a unique 1/N shard of the training data.
         return self.general_loader(
             self.train_dataset, batch_size=self.cfg.batch_size, shuffle=True
         )
 
     def val_dataloader(self):
+        # Val: pass an explicit SequentialSampler so Lightning's auto-shard does
+        # NOT replace it. Every rank evaluates on the FULL val set in parallel
+        # (same wall-time as 1-rank because they're independent on each GPU);
+        # rank 0 then logs all val visualizations to wandb. Avoids the
+        # "qualitative panel only shows 1/N samples" issue under DDP.
+        from torch.utils.data import SequentialSampler
         return self.general_loader(
-            self.val_dataset, batch_size=self.cfg.eval_batch_size
+            self.val_dataset, batch_size=self.cfg.eval_batch_size,
+            sampler=SequentialSampler(self.val_dataset),
         )
 
     def test_dataloader(self):
+        # Test: same rationale as val — full set on every rank, rank-0 logs.
+        from torch.utils.data import SequentialSampler
         return self.general_loader(
-            self.test_dataset, batch_size=self.cfg.eval_batch_size
+            self.test_dataset, batch_size=self.cfg.eval_batch_size,
+            sampler=SequentialSampler(self.test_dataset),
         )
 
     def predict_dataloader(self):
+        from torch.utils.data import SequentialSampler
         return self.general_loader(
-            self.test_dataset, batch_size=self.cfg.eval_batch_size
+            self.test_dataset, batch_size=self.cfg.eval_batch_size,
+            sampler=SequentialSampler(self.test_dataset),
         )
 
     def collate_fn(self, batch):
