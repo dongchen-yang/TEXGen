@@ -210,13 +210,14 @@ Two scales coexist. Pick based on the config you're running.
 - Split file: `data_processing/annotation/data_splits_emissive_74k_pinned.json` (built by `data_processing/create_splits_74k_pinned.py` — preserves the 1k val/test, excludes 1k-train leakage)
 - Storage layout (post-migration, see "Data Migration" below):
     - **NPZ tars (training)**: 8 chunks of ~57 GB each, total ~490 GB. `npz_chunk_00.tar … npz_chunk_07.tar`. Each contains `<shard>/<ditem_id>/somage.npz` + `_dproc_*.json`. Per-sample = 2 entries; total = 7×27,885 + 27,864 = 223,059 entries.
+    - **Thumbnail tar (CLIP conditioning)**: `thumbnails_emissive.tar`, ~12 GB, 80,735 PNGs (covers all 74,353 ditem_ids in the pool plus a few extras). Each at `emissive_thumbnails/<ditem_id>.png` inside the tar. Required for correct CLIP image conditioning — without it the dataloader falls back to the albedo UV map (substantively wrong input). At job start, extracted into `$SLURM_TMPDIR/baked_uv/emissive_thumbnails/`, then symlinked as `$SLURM_TMPDIR/baked_uv/thumbnails -> emissive_thumbnails` to match the path the dataloader expects.
     - **GLB tars (eval / rendering)**: 8 chunks of ~104 GB each, total ~840 GB. `glb_chunk_00.tar … glb_chunk_07.tar`. Each contains `<shard>/<ditem_id>_1024.glb`. Total 74,353 entries.
 - **Locations**:
-    - Jupiter NFS (archive, source of truth): `/cs/3dlg-jupiter-project/lightgen/dataset/{npz,glb}_chunk_*.tar`
-    - Fir Lustre `/scratch` (ready for training): `/home/dya78/scratch/lightgen/data/tars/{npz,glb}_chunk_*.tar`
-- **Job-time staging**: `slurm_train_74k.sh` and `submit_emissive_74k.sh` extract the 8 NPZ tars to `$SLURM_TMPDIR/baked_uv/` (~456 GB extracted) at job start using `detar_progress.py` (parallel-of-8 with single tqdm bar; ~2 min on H100 nodes). GLB tars stay on `/scratch` — only needed for downstream evaluation, not training.
+    - Jupiter NFS (archive, source of truth): `/cs/3dlg-jupiter-project/lightgen/dataset/{npz,glb}_chunk_*.tar` + `thumbnails_emissive.tar`
+    - Fir Lustre `/scratch` (ready for training): `/home/dya78/scratch/lightgen/data/tars/{npz,glb}_chunk_*.tar` + `thumbnails_emissive.tar`
+- **Job-time staging**: `slurm_train_74k.sh` and `submit_emissive_74k.sh` extract the 8 NPZ tars (~2 min via `detar_progress.py`, parallel-of-8 with single tqdm bar) **plus** the thumbnail tar (~30 s) into `$SLURM_TMPDIR/baked_uv/` on job start. Total extracted ~468 GB into node-local SSD. GLB tars stay on `/scratch` — only needed for downstream evaluation, not training.
 
-### Data Migration (2026-04-23)
+### Data Migration (2026-04-23, with thumbnail follow-up 2026-04-28)
 
 The 74k subset was migrated from `/cs/3dlg-falas/` symlinks to standalone tar archives so it's portable to clusters without 3dlg-falas access (i.e. fir).
 
@@ -225,7 +226,14 @@ The 74k subset was migrated from `/cs/3dlg-falas/` symlinks to standalone tar ar
     - `tar_driver.sh` — builds 8+8 tars on jupiter NFS reading from /cs/3dlg-falas (4h 31m wall time)
     - `rsync_driver.sh` — pushes tars jupiter→fir over WAN (8h 32m wall time at ~42 MB/s)
     - `verify_jupiter.sh` — `tar -tf | wc -l` per tar to confirm entry counts
-- Total wall time end-to-end: ~13h 10m. 1.3 TB total on each side. See conversation log of 2026-04-23 for full migration details.
+- 2026-04-28 follow-up: built `thumbnails_emissive.tar` (12 GB) from `processed_data/emissive_thumbnails/` directly to jupiter NFS (~3 min) and rsync'd to fir (~4 min). Discovered after observing 4,637 "Thumbnail not found, using albedo UV map as fallback" warnings in the first successful 74k training run — model had been getting wrong CLIP conditioning (albedo UV map instead of rendered preview) for the entire 8-epoch debug run.
+- Total wall time end-to-end: ~13h 10m for NPZ+GLB; +~7 min for thumbnails. 1.3 TB total on each side.
+
+### Distributed sampler caveat under DDP
+
+PyTorch Lightning auto-injects `DistributedSampler` for every dataloader under DDP, including val/test. With 4 ranks, each rank only sees 1/4 of the val/test set, and only rank 0 logs to wandb — so the qualitative panel shows only 1/4 of the visualizations vs the 1k baseline (28 of 112 val samples observed in first 74k run vs 109 in `htiandl5`).
+
+**Fix in `lightgen_uv.py`** (commit 056a5ad, 2026-04-28): `val_dataloader()`, `test_dataloader()`, and `predict_dataloader()` pass an explicit `SequentialSampler`. Lightning respects an explicit sampler and skips its auto-shard. Every rank now evaluates the full val/test set in parallel (same wall-time as 1-rank since they're independent on each GPU; 4× redundant compute on val, but val is < 1% of total job time). Train still uses Lightning's auto `DistributedSampler` (we want sharded training).
 
 ## Config System
 
