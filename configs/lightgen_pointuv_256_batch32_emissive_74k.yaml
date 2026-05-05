@@ -109,14 +109,18 @@ system:
     name: CosineAnnealingLR
     interval: step
     args:
-      # 4× H100 DDP, per-GPU bs=32 → global batch 128.
-      # 73251 train / 128 = ceil = 573 steps/epoch × 80 epochs ≈ 45840 total steps.
-      # T_max == total steps so LR cosines from lr → eta_min over the full run.
-      T_max: 45840
+      # 4× H100 DDP, per-GPU bs=32 → global batch 128.  573 steps/epoch.
+      # Extended from 80 → 350 epochs (T_max 45840 → 200520) on 2026-04-30 to
+      # match TEXGen-paper-equivalent training compute (~25.6 M sample-views).
+      # NOTE on resume from the existing 80-epoch run: scheduler.last_epoch is
+      # restored from ckpt (~20K), but T_max is read from this updated config →
+      # current LR will warm-restart from ~2.94e-4 to ~4.88e-4 on next requeue.
+      # Acceptable: closer to active LR range, may help escape val-PSNR jitter.
+      T_max: 200520
       eta_min: 1e-6
 
 trainer:
-  max_epochs: 80
+  max_epochs: 350    # was 80; extended 2026-04-30 to match paper-equivalent compute
   check_val_every_n_epoch: 1    # 4-GPU epoch is ~573 steps (~50 min) — validate each epoch
   num_sanity_val_steps: 2
   precision: bf16-mixed
@@ -136,4 +140,4 @@ checkpoint:
 wandb:
   project: "LightGen"
   tags: ["baseline", "from_scratch", "emissive_74k", "pinned_val_test"]
-  notes: "74k scaling: 73251 train / 112 val / 109 test (val+test pinned to 1k baseline). 4× H100 DDP, per-GPU bs=32, global bs=128, 256x256, 80 epochs."
+  notes: "74k scaling: 73251 train / 112 val / 109 test (val+test pinned to 1k baseline). 4× H100 DDP, per-GPU bs=32, global bs=128, 256x256. Extended to 350 epochs on 2026-04-30 to match paper-equivalent compute; LR/WD unchanged from original 5e-4/0.01."
