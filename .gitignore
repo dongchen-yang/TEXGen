@@ -4,9 +4,6 @@
 # Ignore Python byte-compiled files
 __pycache__/
 
-# Ingore .sh
-*.sh
-
 # Model outputs and checkpoints
 output*/
 outputs/
@@ -17,6 +14,7 @@ assets/checkpoints/*.ckpt
 wandb/
 *.log
 inference_outputs/
+logs/
 
 # Virtual environments
 .venv/
@@ -27,6 +25,10 @@ videos/
 # Python version management
 .python-version
 
-# Generated comparison outputs
+# Generated comparison / render outputs
 comparison_overfit/
 render_outputs/
+deprecated/comparisons/generated/
+
+# Local Claude settings under archived experiment dirs
+deprecated/scripts/**/.claude/

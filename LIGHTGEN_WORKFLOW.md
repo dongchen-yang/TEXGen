@@ -1,0 +1,69 @@
+# LightGen @ TEXGen — active workflow map
+
+Short map of what to use for emission training/inference. Upstream TEXGen
+docs remain in `README.md`; agent notes in `CLAUDE.md`. Archived experiments
+live under `deprecated/`.
+
+## Active configs (`configs/`)
+
+### Three baseline variants (1k filtered + overfit)
+
+| Variant | Full | Overfit |
+|---------|------|---------|
+| Vanilla | `lightgen_pointuv_256_batch32_emission_filtered.yaml` | `lightgen_pointuv_overfit.yaml` |
+| GT mask cond | `lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml` | `lightgen_pointuv_overfit_gt_mask_cond.yaml` |
+| Mask cls loss | `lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml` | `lightgen_pointuv_overfit_mask_cls.yaml` |
+
+### 74k production
+
+- `lightgen_pointuv_256_batch32_emissive_74k.yaml` — primary 74k vanilla
+- `lightgen_pointuv_256_batch32_emissive_74k_paperHP.yaml` — paper HP variant
+
+### Mask-cls λ=0.01 (still relevant)
+
+- `lightgen_pointuv_256_batch32_emission_filtered_mask_cls_lambda001.yaml`
+- `lightgen_pointuv_256_batch32_emission_filtered_mask_cls_lambda001_balanced.yaml`
+- `lightgen_pointuv_overfit_mask_cls_lambda001.yaml` — overfit recipe for λ=0.01
+
+Also keep `configs/data_splits_overfit_single.json` for overfit splits.
+
+## Train
+
+```bash
+# From TEXGen/, conda env: texgen
+conda run -n texgen bash -c 'python launch.py --config configs/lightgen_pointuv_overfit.yaml --gpu 0 --train'
+
+# Full 1k-style filtered baseline
+conda run -n texgen bash -c 'python launch.py --config configs/lightgen_pointuv_256_batch32_emission_filtered.yaml --gpu 0 --train --wandb'
+
+# 74k on fir (production)
+sbatch slurm_train_74k.sh
+# or the fir wrappers:
+bash scripts/fir/texgen_256_batchsize32_filter_emission.sh
+bash scripts/fir/texgen_256_batchsize32_filter_emission_gt_mask_condition.sh
+bash scripts/fir/texgen_256_batchsize32_filter_emission_cls_semantic.sh
+bash scripts/fir/texgen_256_batchsize32_filter_emission_cls_lambda001.sh
+bash scripts/fir/texgen_256_batchsize32_filter_emission_cls_lambda001_balanced.sh
+```
+
+`slurm_train.sh` — older 1k fir path. `batch_sweep.sh` — per-GPU max-batch probe on fir.
+
+## Infer / evaluate samples
+
+```bash
+conda run -n texgen bash -c 'python launch.py --config <config.yaml> --gpu 0 --test system.resume=/path/to/checkpoint.ckpt'
+conda run -n texgen bash -c 'python inference_specific_samples.py'
+```
+
+Related: `render_inference_blender.py`, `render_inference_multiview.py`,
+`filter_local_subset_emission.py`, `filter_dataset.py`, `precompute_clip_embeddings.py`.
+
+## Do not change casually
+
+- `spuv/data/lightgen_uv.py` — atlas encoding contract (somage / uv_voxel_pipeline parity).
+- Production checkpoints live on fir / Jupiter (`/cs/3dlg-jupiter-project/lightgen/TEXGen/outputs`), not in local `outputs/`.
+
+## Env
+
+- Training/inference: `conda run -n texgen ...`
+- Parent LightGen evaluation (Blender/VLM): `lightgen` env — outside this submodule.

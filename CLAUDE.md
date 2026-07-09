@@ -6,7 +6,8 @@
 
 ## Baseline Variants
 
-There are exactly **3 baseline variants**. All other configs (pretrained, unfiltered, bs2, simple U-Net, base) are deprecated and should be ignored.
+There are exactly **3 baseline variants**. Active workflow map: [`LIGHTGEN_WORKFLOW.md`](LIGHTGEN_WORKFLOW.md).
+Superseded overfit10 / sweep configs and stale docs live under `deprecated/` (not `deprecated/configs/` of older pretrained variants — those were never in this tree).
 
 | Variant | 1k Full Config | 74k Scaled Config | Overfit Config | Key Difference |
 |---------|----------------|-------------------|----------------|----------------|
@@ -40,9 +41,8 @@ python launch.py --config <config.yaml> --gpu 0 --train --wandb
 sbatch slurm_train.sh
 
 # SLURM cluster (74k scaled on fir; auto extracts NPZ tars to $SLURM_TMPDIR)
-bash submit_emissive_74k.sh   # wrapper from repo root: ssh fir sbatch <<EOF ...
-# OR directly on fir:
 sbatch slurm_train_74k.sh
+# Variant wrappers: scripts/fir/texgen_256_batchsize32_filter_emission*.sh
 
 # Per-GPU max-batch probe on fir (H100; runs 3 forward+backward steps per bs)
 DATA_ROOT=$SLURM_TMPDIR/baked_uv bash batch_sweep.sh
@@ -65,7 +65,6 @@ python launch.py --config <config.yaml> --gpu 0 --train system.optimizer.args.lr
 - `--verbose` — DEBUG-level logging
 - `--typecheck` — dynamic type checking via jaxtyping
 - `--benchmark` — record running times
-- `python test_dataloader.py` / `python test_full_data.py` — data verification
 
 ## Architecture
 
@@ -74,8 +73,11 @@ python launch.py --config <config.yaml> --gpu 0 --train system.optimizer.args.lr
 lightgen/                            # Top-level project
 ├── TEXGen/                          # Git submodule — main implementation
 │   ├── launch.py                    # Entry point (train/test/validate/export)
-│   ├── configs/                     # YAML configs (OmegaConf)
-│   ├── slurm_train.sh              # SLURM job script
+│   ├── configs/                     # Active YAML configs (OmegaConf)
+│   ├── scripts/fir/                 # Canonical fir launch wrappers
+│   ├── slurm_train_74k.sh           # 74k SLURM job script
+│   ├── LIGHTGEN_WORKFLOW.md         # Active LightGen workflow map
+│   ├── deprecated/                  # Archived overfit10/sweep configs & helpers
 │   ├── spuv/                        # Core package
 │   │   ├── systems/
 │   │   │   ├── base.py              # BaseSystem — abstract LightningModule
@@ -215,7 +217,7 @@ Two scales coexist. Pick based on the config you're running.
 - **Locations**:
     - Jupiter NFS (archive, source of truth): `/cs/3dlg-jupiter-project/lightgen/dataset/{npz,glb}_chunk_*.tar` + `thumbnails_emissive.tar`
     - Fir Lustre `/scratch` (ready for training): `/home/dya78/scratch/lightgen/data/tars/{npz,glb}_chunk_*.tar` + `thumbnails_emissive.tar`
-- **Job-time staging**: `slurm_train_74k.sh` and `submit_emissive_74k.sh` extract the 8 NPZ tars (~2 min via `detar_progress.py`, parallel-of-8 with single tqdm bar) **plus** the thumbnail tar (~30 s) into `$SLURM_TMPDIR/baked_uv/` on job start. Total extracted ~468 GB into node-local SSD. GLB tars stay on `/scratch` — only needed for downstream evaluation, not training.
+- **Job-time staging**: `slurm_train_74k.sh` extracts the 8 NPZ tars (~2 min via `detar_progress.py`, parallel-of-8 with single tqdm bar) **plus** the thumbnail tar (~30 s) into `$SLURM_TMPDIR/baked_uv/` on job start. Total extracted ~468 GB into node-local SSD. GLB tars stay on `/scratch` — only needed for downstream evaluation, not training.
 
 ### Data Migration (2026-04-23, with thumbnail follow-up 2026-04-28)
 
@@ -344,12 +346,12 @@ Sweep of `lambda_pred_mask_cls` ∈ {0.0 (vanilla), 0.01, 0.1, 1.0, 10.0}. All o
 ### Mask Cls Lambda Sweep Configs
 | Lambda | Config |
 |--------|--------|
-| 0.01 | `lightgen_pointuv_overfit_mask_cls_lambda001.yaml` |
-| 0.1 | `lightgen_pointuv_overfit_mask_cls_lambda01.yaml` |
-| 1.0 | `lightgen_pointuv_overfit_mask_cls.yaml` |
-| 10.0 | `lightgen_pointuv_overfit_mask_cls_lambda10.yaml` |
+| 0.01 | `configs/lightgen_pointuv_overfit_mask_cls_lambda001.yaml` (kept active) |
+| 0.1 | `deprecated/configs/lightgen_pointuv_overfit_mask_cls_lambda01.yaml` |
+| 1.0 | `configs/lightgen_pointuv_overfit_mask_cls.yaml` (baseline overfit) |
+| 10.0 | `deprecated/configs/lightgen_pointuv_overfit_mask_cls_lambda10.yaml` |
 
-Sweep script: `run_mask_cls_lambda_sweep.sh`
+Sweep script (archived): `deprecated/scripts/root/run_mask_cls_lambda_sweep.sh`
 
 ## Hardware Requirements
 
