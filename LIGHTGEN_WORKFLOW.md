@@ -8,11 +8,8 @@ live under `deprecated/`.
 
 ### Three baseline variants (1k filtered + overfit)
 
-| Variant | Full | Overfit |
-|---------|------|---------|
-| Vanilla | `lightgen_pointuv_256_batch32_emission_filtered.yaml` | `lightgen_pointuv_overfit.yaml` |
-| GT mask cond | `lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml` | `lightgen_pointuv_overfit_gt_mask_cond.yaml` |
-| Mask cls loss | `lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml` | `lightgen_pointuv_overfit_mask_cls.yaml` |
+Variant→config table: canonical copy in the parent repo at
+[`docs/baselines/texgen.md`](../docs/baselines/texgen.md) (do not restate here).
 
 ### 74k production
 

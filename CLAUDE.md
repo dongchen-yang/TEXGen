@@ -6,14 +6,13 @@
 
 ## Baseline Variants
 
-There are exactly **3 baseline variants**. Active workflow map: [`LIGHTGEN_WORKFLOW.md`](LIGHTGEN_WORKFLOW.md).
-Superseded overfit10 / sweep configs and stale docs live under `deprecated/` (not `deprecated/configs/` of older pretrained variants — those were never in this tree).
+There are exactly **3 baseline variants**. Variant→config table: canonical copy in the parent repo at
+[`docs/baselines/texgen.md`](../docs/baselines/texgen.md) (do not restate here). Active workflow map:
+[`LIGHTGEN_WORKFLOW.md`](LIGHTGEN_WORKFLOW.md). Superseded overfit10 / sweep configs and stale docs live
+under `deprecated/` (not `deprecated/configs/` of older pretrained variants — those were never in this tree).
 
-| Variant | 1k Full Config | 74k Scaled Config | Overfit Config | Key Difference |
-|---------|----------------|-------------------|----------------|----------------|
-| **Vanilla** | `lightgen_pointuv_256_batch32_emission_filtered.yaml` | `lightgen_pointuv_256_batch32_emissive_74k.yaml` | `lightgen_pointuv_overfit.yaml` | Standard 12-ch input, MSE+L1 loss |
-| **GT Mask Cond** | `lightgen_pointuv_256_batch32_emission_filtered_gt_mask_cond.yaml` | _(not yet)_ | `lightgen_pointuv_overfit_gt_mask_cond.yaml` | 13-ch input (stacks thresholded GT emission mask as extra channel) |
-| **Mask Cls Loss** | `lightgen_pointuv_256_batch32_emission_filtered_mask_cls.yaml` | _(not yet)_ | `lightgen_pointuv_overfit_mask_cls.yaml` | 12-ch input, adds BCE mask classification loss (`lambda_pred_mask_cls: 1.0`, threshold 0.01) |
+Upstream README's `configs/texgen_test.yaml` inference command is broken in this fork (config deleted in
+39c0452). `requirements_125.txt` is the fork-authoritative requirements file for the `texgen` env.
 
 ## Commands
 
@@ -67,53 +66,6 @@ python launch.py --config <config.yaml> --gpu 0 --train system.optimizer.args.lr
 - `--benchmark` — record running times
 
 ## Architecture
-
-### Repository Structure
-```
-lightgen/                            # Top-level project
-├── TEXGen/                          # Git submodule — main implementation
-│   ├── launch.py                    # Entry point (train/test/validate/export)
-│   ├── configs/                     # Active YAML configs (OmegaConf)
-│   ├── scripts/fir/                 # Canonical fir launch wrappers
-│   ├── slurm_train_74k.sh           # 74k SLURM job script
-│   ├── LIGHTGEN_WORKFLOW.md         # Active LightGen workflow map
-│   ├── deprecated/                  # Archived overfit10/sweep configs & helpers
-│   ├── spuv/                        # Core package
-│   │   ├── systems/
-│   │   │   ├── base.py              # BaseSystem — abstract LightningModule
-│   │   │   ├── texgen_base.py       # TEXGenDiffusion — Flow Matching, EMA, schedulers
-│   │   │   ├── texgen_test.py       # TEXGenDiffusion — validation/test (Euler ODE inference)
-│   │   │   └── lightgen_system.py   # LightGenSystem — emission losses, visualization
-│   │   ├── models/
-│   │   │   ├── sparse_networks/
-│   │   │   │   ├── lightgen_pointuvnet.py  # LightGenPointUVNet (primary backbone)
-│   │   │   │   ├── texgen_network.py       # Original PointUVNet (base architecture)
-│   │   │   │   └── serialization/          # Voxel ordering (z-order, Hilbert)
-│   │   │   ├── simple_uv_unet.py           # SimpleUVUNet (lightweight, for quick tests)
-│   │   │   ├── tokenizers/clip.py          # CLIP conditioning
-│   │   │   ├── lpips.py                    # Perceptual loss
-│   │   │   └── renderers/                  # NVDiffRast rendering
-│   │   ├── data/
-│   │   │   ├── lightgen_uv.py       # LightGenDataModule — loads NPZ, parquet indexing
-│   │   │   └── mesh_uv.py           # Original TEXGen loader (unused)
-│   │   └── utils/
-│   │       ├── config.py            # OmegaConf config loading
-│   │       ├── image_metrics.py     # SSIM, PSNR
-│   │       ├── memory_tracker.py    # GPU OOM debugging
-│   │       ├── lit_ema.py           # EMA weight averaging
-│   │       └── snr_utils.py         # SNR-based loss weighting
-│   └── inference_outputs/           # Saved inference results
-├── data/
-│   └── baked_uv_local_subset/       # Dataset (NPZ + parquet + split JSONs)
-├── evaluation/                      # Standalone evaluation scripts
-│   ├── PSNR.py                      # Emission PSNR
-│   ├── IoU.py / 3DIoU.py           # 2D/3D IoU on emission masks
-│   ├── VLM.py / VLM_multiview.py   # VLM-based evaluation
-│   ├── patch_psnr_emission.py       # PSNR fix (handles NaN/inf)
-│   └── generate_result_html.py      # HTML result visualization
-├── external/xgutils/                # Git submodule — utility library
-└── visualization/                   # Visualization tools
-```
 
 ### Inheritance Chain
 ```
@@ -223,7 +175,7 @@ Two scales coexist. Pick based on the config you're running.
 
 The 74k subset was migrated from `/cs/3dlg-falas/` symlinks to standalone tar archives so it's portable to clusters without 3dlg-falas access (i.e. fir).
 
-- Manifests + drivers under `_staging_migrate/` on the workstation:
+- Manifests + drivers under `deprecated/_staging_migrate/` on the workstation:
     - `manifests/{npz,glb}_chunk_*.paths` (74,353 ditem_ids resolved to shard/id; 8 chunks of ~9,295 each)
     - `tar_driver.sh` — builds 8+8 tars on jupiter NFS reading from /cs/3dlg-falas (4h 31m wall time)
     - `rsync_driver.sh` — pushes tars jupiter→fir over WAN (8h 32m wall time at ~42 MB/s)
@@ -304,7 +256,7 @@ Full training checkpoints go to `/scratch/dya78/lightgen/TEXGen/output_emission_
 - **Conda env**: `texgen`
 - **Critical env var**: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (prevents OOM from fragmentation)
 
-## Experiment Findings
+## Appendix: historical experiment log (2026-03/04)
 
 ### Overfit Test — 3 Baseline Variants (2026-03-23)
 
