@@ -32,8 +32,12 @@ def find_sample_index(sample_id, parquet_file):
     else:
         return None
 
-def inference_samples(checkpoint_path, sample_ids, output_dir):
-    """Run inference on specific samples and save results."""
+def inference_samples(checkpoint_path, sample_ids, output_dir, data_root=None, parquet_file=None):
+    """Run inference on specific samples and save results.
+
+    data_root/parquet_file override the hardcoded full-dataset paths (used by the newdata_eval
+    harness to point at a staged native-somage root that also carries thumbnails/).
+    """
     
     print("=" * 80)
     print("LightGen Inference for Specific Samples")
@@ -77,10 +81,10 @@ def inference_samples(checkpoint_path, sample_ids, output_dir):
     # Override to use full dataset (not filtered) to find all samples
     cfg_data = cfg.data.copy()
     # Use full dataset paths
-    cfg_data.parquet_file = "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
-    cfg_data.data_root = "/localhome/dya78/code/lightgen/data/baked_uv"
-    print(f"   Using full dataset: {cfg_data.parquet_file}")
-    print(f"   Thumbnails will be loaded from: data/baked_uv_local/thumbnails/")
+    cfg_data.parquet_file = parquet_file or "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
+    cfg_data.data_root = data_root or "/localhome/dya78/code/lightgen/data/baked_uv"
+    print(f"   Using dataset: {cfg_data.parquet_file}")
+    print(f"   data_root: {cfg_data.data_root} (thumbnails from {cfg_data.data_root}/thumbnails/)")
     
     # Don't apply train/val/test filters
     cfg_data.test_indices = None

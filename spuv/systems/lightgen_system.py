@@ -93,10 +93,12 @@ class LightGenSystem(TEXGenDiffusion):
             self._cached_text_embedding = self.image_tokenizer.process_text(["emission generation"]).to(dtype=self.dtype)  # [1, 768]
         text_embeddings = self._cached_text_embedding.expand(B, -1)
 
-        # Use precomputed CLIP image embedding if available, otherwise encode online
-        if batch.get('clip_image_embedding') is not None:
+        # Use precomputed CLIP image embedding if available, otherwise encode online.
+        # NOTE: default collate turns per-sample None into [None] (a list), so guard on tensor-ness,
+        # not `is not None` — otherwise online-CLIP inference calls `.to()` on a list.
+        if isinstance(batch.get('clip_image_embedding'), torch.Tensor):
             image_embeddings = batch['clip_image_embedding'].to(dtype=self.dtype)  # [B, 768]
-        elif batch.get('thumbnail') is not None:
+        elif isinstance(batch.get('thumbnail'), torch.Tensor):
             rendered_thumbnail = batch['thumbnail']  # [B, 1, H, W, 3]
             image_embeddings = self.image_tokenizer.process_image(rendered_thumbnail).to(dtype=self.dtype)
         else:
