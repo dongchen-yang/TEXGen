@@ -41,9 +41,9 @@ handle_timeout() {
     echo "[trap] timeout signal received (~5 min remaining); stopping training..."
     if [ -n "${TRAIN_PID:-}" ] && kill -0 "${TRAIN_PID}" 2>/dev/null; then
         kill -TERM "${TRAIN_PID}" 2>/dev/null
-        wait "${TRAIN_PID}"
+        wait "${TRAIN_PID}" || true   # nonzero exit is expected; don't let errexit skip the requeue
     fi
-    scontrol requeue "${SLURM_JOB_ID}"
+    scontrol requeue "${SLURM_JOB_ID}" || true
     exit 0
 }
 trap handle_timeout SIGTERM
@@ -82,7 +82,7 @@ T0=$(date +%s)
 srun --ntasks="${SLURM_NNODES}" --ntasks-per-node=1 --cpus-per-task=12 bash -c '
     set -e
     mkdir -p "'"${DATA_ROOT}"'"
-    python "'"${PROJECT_ROOT}"'/TEXGen/detar_progress.py" "'"${TARS_DIR}"'" "'"${DATA_ROOT}"'"
+    python "'"${PROJECT_ROOT}"'/TEXGen/detar_progress.py" "'"${TARS_DIR}"'" "'"${DATA_ROOT}"'" "texgen_root_chunk_*.tar"
     mkdir -p "'"${DATA_ROOT}"'/thumbnails"
     tar -xf "'"${TARS_DIR}"'/thumbnails_emissive.tar" -C "'"${DATA_ROOT}"'/thumbnails" --strip-components=1
     echo "[stage:$(hostname)] npz: $(find "'"${DATA_ROOT}"'" -name somage.npz | wc -l), thumbs: $(ls "'"${DATA_ROOT}"'/thumbnails" | wc -l)"
@@ -107,15 +107,18 @@ echo "[train] launching 2x4 L40S DDP (global batch 32)"
 # srun spawns ntasks-per-node=4 tasks/node; Lightning's SLURM env consumes the
 # ranks (config: trainer.num_nodes=2, devices=-1 -> 4 visible GPUs per task set).
 # auto_resume picks up last.ckpt on requeue.
-srun python launch.py \
+# --gpu-bind=none: every task must see all 4 local GPUs (Lightning picks by
+# SLURM_LOCALID; per-task binding would collapse devices to 1 and trip the
+# ntasks-per-node == devices assertion).
+srun --gpu-bind=none python launch.py \
     --config "${CONFIG}" \
     --gpu 0 \
     --train \
     --wandb \
     "data.data_root=${DATA_ROOT}" &
 TRAIN_PID=$!
-wait "${TRAIN_PID}"
-EXIT_CODE=$?
+EXIT_CODE=0
+wait "${TRAIN_PID}" || EXIT_CODE=$?
 
 echo "[done] train exit ${EXIT_CODE} at $(date -Iseconds)"
 if [ "${EXIT_CODE}" -ne 0 ]; then
