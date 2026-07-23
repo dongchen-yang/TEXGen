@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH --mail-user=yangdongchen1@gmail.com
 #SBATCH --mail-type=END,FAIL,REQUEUE
 #SBATCH -J texgen_74k_v2
