@@ -27,12 +27,12 @@
 #   1. clone lightgen to /scratch/dya78/lightgen (recursive, lightgen branch of
 #      TEXGen submodule at the texgen-74k-v2-vulcan commit) + build env/ per
 #      cluster-access fir/env-setup.md (same modules as below, --no-index wheels)
-#   2. /scratch/dya78/lightgen/data/df_SomgProc_final.parquet
-#      /scratch/dya78/lightgen/data/data_splits_emissive_74k_stratified_newbake.json
-#   3. /scratch/dya78/lightgen/data/tars_v2/texgen_root_chunk_*.tar  (8 chunks)
-#      /scratch/dya78/lightgen/data/tars_v2/thumbnails_emissive.tar
+#   2. /scratch/dya78/lightgen_repo/data/df_SomgProc_final.parquet
+#      /scratch/dya78/lightgen_repo/data/data_splits_emissive_74k_stratified_newbake.json
+#   3. /scratch/dya78/lightgen_repo/data/tars_v2/texgen_root_chunk_*.tar  (8 chunks)
+#      /scratch/dya78/lightgen_repo/data/tars_v2/thumbnails_emissive.tar
 #
-# Usage (from /scratch/dya78/lightgen/TEXGen):
+# Usage (from /scratch/dya78/lightgen_repo/TEXGen):
 #   sbatch scripts/vulcan/slurm_train_74k_v2.sh
 
 set -euo pipefail
@@ -49,8 +49,8 @@ handle_timeout() {
 trap handle_timeout SIGTERM
 
 CONFIG=${CONFIG:-configs/lightgen_pointuv_256_batch32_emissive_74k_v2.yaml}
-TARS_DIR=${TARS_DIR:-/scratch/dya78/lightgen/data/tars_v2}
-PROJECT_ROOT=/scratch/dya78/lightgen
+TARS_DIR=${TARS_DIR:-/scratch/dya78/lightgen_repo/data/tars_v2}
+PROJECT_ROOT=/scratch/dya78/lightgen_repo
 
 echo "============================================"
 echo "Job ID:    ${SLURM_JOB_ID}   Nodes: ${SLURM_NODELIST}"

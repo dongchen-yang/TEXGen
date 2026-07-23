@@ -23,7 +23,7 @@ auto_resume: true
 data_cls: spuv.data.lightgen_uv.LightGenDataModule
 data:
   data_root: "/REPLACED_BY_SLURM_TMPDIR/texgen_train_root"
-  parquet_file: "/scratch/dya78/lightgen/data/df_SomgProc_final.parquet"
+  parquet_file: "/scratch/dya78/lightgen_repo/data/df_SomgProc_final.parquet"
   scene_list: ""
   eval_scene_list: ""
   repeat: 1
@@ -35,9 +35,9 @@ data:
   eval_sup_views: 4
   eval_camera_strategy: "strategy_test_1_to_4_90deg"
 
-  train_indices: "/scratch/dya78/lightgen/data/data_splits_emissive_74k_stratified_newbake.json"
-  val_indices: "/scratch/dya78/lightgen/data/data_splits_emissive_74k_stratified_newbake.json"
-  test_indices: "/scratch/dya78/lightgen/data/data_splits_emissive_74k_stratified_newbake.json"
+  train_indices: "/scratch/dya78/lightgen_repo/data/data_splits_emissive_74k_stratified_newbake.json"
+  val_indices: "/scratch/dya78/lightgen_repo/data/data_splits_emissive_74k_stratified_newbake.json"
+  test_indices: "/scratch/dya78/lightgen_repo/data/data_splits_emissive_74k_stratified_newbake.json"
 
   height: 256
   width: 256
@@ -136,7 +136,7 @@ trainer:
   log_every_n_steps: 50
 
 checkpoint:
-  dirpath: "/scratch/dya78/lightgen/TEXGen/output_emissive_74k_vanilla_v2/"
+  dirpath: "/scratch/dya78/lightgen_repo/TEXGen/output_emissive_74k_vanilla_v2/"
   save_last: true
   save_top_k: 5
   every_n_epochs: 5
