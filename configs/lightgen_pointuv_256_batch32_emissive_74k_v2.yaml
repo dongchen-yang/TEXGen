@@ -6,7 +6,7 @@
 # lightgen_pointuv_256_batch32_emissive_74k.yaml.
 #
 name: lightgen
-tag: "pointuv_256res_batch32_emissive_74k_v2"
+tag: "texgen_vanilla_74k_v2"
 exp_root_dir: "outputs"
 seed: 42
 

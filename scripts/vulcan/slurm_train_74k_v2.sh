@@ -73,6 +73,7 @@ source "${PROJECT_ROOT}/env/bin/activate"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HOME=${HF_HOME:-${PROJECT_ROOT}/.cache/huggingface}
 export TORCH_HOME=${TORCH_HOME:-${PROJECT_ROOT}/.cache/torch}
+export HF_HUB_OFFLINE=1   # SD3.5 CLIP tokenizer/text-encoder pre-cached; compute nodes have no internet
 mkdir -p "${HF_HOME}" "${TORCH_HOME}"
 
 # Stage data on EVERY node's local SSD (per-node $SLURM_TMPDIR).
