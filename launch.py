@@ -334,11 +334,21 @@ def main(args, extras) -> None:
             # On other ranks, the wandb module is the preinit stub and direct calls like
             # wandb.define_metric raise "must call wandb.init() before". Skip on non-zero ranks.
             #
-            # NOTE: at this point in launch.py we're BEFORE trainer.fit() — Lightning has
-            # not yet populated LOCAL_RANK from SLURM. Use SLURM_LOCALID (set by srun) or
-            # fall back to LOCAL_RANK / 0 for non-srun launches.
-            _local_rank = int(os.environ.get("SLURM_LOCALID",
-                              os.environ.get("LOCAL_RANK", "0")))
+            # NOTE: at this point in launch.py we're BEFORE trainer.fit().
+            #
+            # LOCAL_RANK is checked FIRST and that order is load-bearing. SLURM_LOCALID
+            # is set per *task*: under Lightning's native DDP spawn (one task, four
+            # spawned children) every child inherits the parent's SLURM_LOCALID=0, so
+            # all four ranks believed they were rank 0, all four called define_metric(),
+            # and the three that never ran wandb.init() died with "You must call
+            # wandb.init() before wandb.define_metric()" — killing the job (vulcan
+            # 217672, 2026-07-29). Lightning's subprocess launcher sets LOCAL_RANK
+            # per child, so it is the truthful value when it exists.
+            #
+            # Under the srun path (ntasks == devices) LOCAL_RANK is unset here and this
+            # falls back to SLURM_LOCALID, preserving the original fir behaviour exactly.
+            _local_rank = int(os.environ.get("LOCAL_RANK",
+                              os.environ.get("SLURM_LOCALID", "0")))
             if _local_rank == 0:
                 _ = wandb_logger.experiment
                 wandb.define_metric("trainer/global_step")
