@@ -69,7 +69,11 @@ module load StdEnv/2023 cuda/12.6
 module load gcc opencv arrow/22.0.0 sparsehash python/3.11.5
 source "${PROJECT}/env/bin/activate"
 
+# torch 2.9 renamed this; set both so the setting is honoured either way. It is not
+# cosmetic — the OOM in job 217827 explicitly recommended expandable_segments, and
+# the run had 42 GB live against 44.39 GiB usable, where fragmentation decides.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 export HF_HOME=${HF_HOME:-${PROJECT}/.cache/huggingface}
 export TORCH_HOME=${TORCH_HOME:-${PROJECT}/.cache/torch}
 export HF_HUB_OFFLINE=1        # compute nodes have no internet; CLIP is pre-cached

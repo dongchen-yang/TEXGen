@@ -58,14 +58,20 @@ data:
   width: 256
   uv_height: 256
   uv_width: 256
-  batch_size: 16         # micro-batch; 4 L40S x 16 x accumulate 2 -> global 128
-  eval_batch_size: 8     # global 32 (no accumulation on val)
-  # An L40S has 48 GB and per-GPU 32 needs ~58.8 GB (static ~14 GB + 1.37 GB/sample,
-  # measured on H100-80), so it does not fit. Micro-batch 16 needs ~35.9 GB, which
-  # does, and accumulate_grad_batches: 2 restores the global batch to 128. This is
-  # what keeps the run on ONE node: reaching 128 with a full per-GPU batch would
-  # need 8 ranks, i.e. two nodes, i.e. the cross-node NCCL rendezvous that has never
-  # worked here (job 83679 requeued ~19 times without reaching step 0).
+  batch_size: 8          # micro-batch; 4 L40S x 8 x accumulate 4 -> global 128
+  eval_batch_size: 4
+  # MEASURED on this stack, not extrapolated. Job 217827 ran micro-batch 16 and
+  # OOM'd: peak 41.99 GB against an L40S's usable 44.39 GiB (not 48 — ECC/reserved
+  # overhead), with `before_backward` showing only 2.82 GB free. The H100-derived
+  # model (static ~14 GB + 1.37 GB/sample => 35.9 GB) UNDERESTIMATES here; the real
+  # slope is nearer 2 GB/sample, and the 74k long tail has heavier-than-average
+  # shapes on top of that.
+  #
+  # Micro-batch 8 => roughly 26 GB, leaving ~18 GB of headroom for the tail, and
+  # accumulate_grad_batches: 4 restores the global batch to 128. Staying on ONE node
+  # is the point: reaching 128 with a full per-GPU batch would need 8 ranks, i.e.
+  # two nodes, i.e. the cross-node NCCL rendezvous that has never worked here
+  # (job 83679 requeued ~19 times without reaching step 0).
   #
   # 6 workers x 4 ranks = 24 of the 48 allocated CPUs (node has 128); bump if the
   # loader lags the GPUs.
@@ -155,9 +161,9 @@ system:
       eta_min: 1e-6
 
 trainer:
-  # 4 ranks x micro-batch 16 x 2 = global 128. Lightning counts OPTIMIZER steps as
+  # 4 ranks x micro-batch 8 x 4 = global 128. Lightning counts OPTIMIZER steps as
   # global_step, so steps/epoch and T_max keep their meaning: 71,646 / 128 = 560.
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 4
   max_epochs: 350    # ⚠️ placeholder — see the T_max note above; set in plan Task 5
   check_val_every_n_epoch: 1    # 560 steps/epoch at global batch 128
   num_sanity_val_steps: 2
