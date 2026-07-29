@@ -14,8 +14,8 @@
 #SBATCH --requeue
 #SBATCH --signal=B:SIGTERM@300
 
-# TEXGen vanilla _v2 on vulcan — ONE node x 4 L40S, micro-batch 16 x
-# accumulate_grad_batches 2 = GLOBAL BATCH 128 (the 4x H100 reference).
+# TEXGen vanilla _v2 on vulcan — ONE node x 4 L40S, micro-batch 8 x
+# accumulate_grad_batches 4 = GLOBAL BATCH 128 (the 4x H100 reference).
 #
 # Replaces scripts/vulcan/slurm_train_74k_v2.sh, which was 2 nodes x 4 L40S and
 # never reached step 0: job 83679 requeued ~19 times between 2026-07-24 and 07-27,
@@ -23,8 +23,11 @@
 # TCPStore timeout. That rendezvous is cross-node only, so staying on one node
 # removes the failure mode entirely rather than working around it.
 #
-# Reaching global 128 on one node needs the accumulation trade: an L40S has 48 GB
-# and per-GPU 32 needs ~58.8 GB. Micro-batch 16 (~35.9 GB) x 2 gets there.
+# Reaching global 128 on one node needs the accumulation trade: an L40S holds
+# 44.39 GiB usable and per-GPU 32 needs far more. Micro-batch 16 was tried first
+# and OOM'd at a measured 41.99 GB peak (job 217827) — the documented H100 sizing
+# model underestimates on this stack. Micro-batch 8 x 4 is the working setting;
+# see the measured table in TEXGen/CLAUDE.md.
 #
 # `#!/bin/bash -l` is load-bearing — a plain bash batch shell on vulcan has no
 # `module` function, so the whole module stack silently no-ops and CUDA_HOME comes
@@ -39,6 +42,10 @@ set -uo pipefail
 NAME=texgen_vanilla_74k_v2
 CONFIG=${CONFIG:-configs/lightgen_pointuv_256_batch32_emissive_74k_v2_vulcan1node.yaml}
 EXTRA=${EXTRA:-}
+# Which local GPUs Lightning sees. Default is the production 4; override to a single
+# device for a cheap per-GPU VRAM probe, which schedules far sooner than a 4-GPU
+# reservation and answers the only per-GPU question there is (VRAM is per device).
+GPUS=${GPUS:-0,1,2,3}
 PROJECT=/scratch/dya78/lightgen_repo
 TARS_DIR=${TARS_DIR:-$PROJECT/data/tars_v2}
 ATTEMPTS=$PROJECT/.texgen_v2_1node_attempts
@@ -61,7 +68,7 @@ trap handle_timeout SIGTERM
 
 echo "============================================"
 echo "Job:    ${SLURM_JOB_ID}   Node: $(hostname)"
-echo "Config: ${CONFIG}   Extra: '${EXTRA}'"
+echo "Config: ${CONFIG}   GPUs: ${GPUS}   Extra: '${EXTRA}'"
 echo "Start:  $(date -Iseconds)"
 echo "============================================"
 
@@ -110,7 +117,7 @@ fi
 # No `| tee`: SLURM's --output already persists everything, and piping would make
 # TRAIN_PID the tee process, so `wait` would report TEE's status and a crashed
 # trainer would be read as success.
-python launch.py --config "${CONFIG}" --gpu 0,1,2,3 --train --wandb \
+python launch.py --config "${CONFIG}" --gpu "${GPUS}" --train --wandb \
     "data.data_root=${DATA_ROOT}" ${EXTRA} &
 TRAIN_PID=$!
 wait "${TRAIN_PID}"
