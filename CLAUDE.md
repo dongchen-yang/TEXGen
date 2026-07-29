@@ -326,3 +326,23 @@ Per-GPU memory probe on a single H100 80 GB (`bash batch_sweep.sh`, 3 train batc
 | 64 | OOM during forward | ❌ |
 
 Per-sample marginal ~1.37 GB; static overhead ~14 GB (model + optimizer + CLIP). Default for production: **per-GPU bs=32 → global 128 on 4× H100**. Memory peaks at backward (model accumulates activations + grads at the same instant, then drops back to ~10 GB after `optimizer.step()`).
+
+### ⚠️ That model underestimates on the torch-2.9 stack (measured on L40S, 2026-07-29)
+
+Do not size a new run from the 1.37 GB/sample slope above without checking it. On vulcan (4× L40S, torch 2.9 + cu12.6, the `_v2` newbake data), micro-batch 16 was predicted at 14 + 16×1.37 = **35.9 GB** and actually peaked at **41.99 GB**, OOM-ing on three ranks at training step 2 (job 217827):
+
+```
+[MEMORY] before_backward | Allocated: 41.57 GB | Free: 2.82 GB | Peak: 41.99 GB
+torch.OutOfMemoryError: GPU 1 has a total capacity of 44.39 GiB
+```
+
+Two corrections that matter when planning:
+
+| | old model | measured here |
+|---|---|---|
+| per-sample slope | 1.37 GB | **~2 GB** |
+| L40S usable VRAM | "48 GB" | **44.39 GiB** (ECC/reserved overhead) |
+
+The 74k long tail also carries heavier-than-average shapes, so leave real headroom rather than sizing to the mean. Working vulcan config: **micro-batch 8 × `accumulate_grad_batches` 4 × 4 ranks = global 128** — Lightning counts optimizer steps as `global_step`, so steps/epoch and `T_max` keep their usual meaning.
+
+Throughput datapoint from the same run (micro-batch 16, 4× L40S): first micro-batch 3m29s including nvrtc kernel compilation, then **~5 s steady-state**, i.e. ~10 s per optimizer step and **~1.6 h/epoch** at 560 steps/epoch.
