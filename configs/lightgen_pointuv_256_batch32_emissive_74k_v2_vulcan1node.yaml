@@ -144,27 +144,30 @@ system:
     name: CosineAnnealingLR
     interval: step
     args:
-      # ⚠️ NOT YET CALIBRATED FOR THIS HARDWARE. These two values are inherited
-      # verbatim from the 4x H100 reference config (where 350 epochs x 573
-      # steps/epoch = 200,520). This run has 560 steps/epoch, and Pro 6000 Max-Q
-      # throughput has not been measured yet.
+      # FROZEN 2026-07-29. T_max = 34,380 optimizer steps = exactly the compute the
+      # superseded baseline actually received (its checkpoint stores global_step
+      # 34,380 = 573 steps/epoch x 60 epochs at the same global batch 128). So this
+      # run replaces that model at equal compute, and unlike it the cosine actually
+      # reaches eta_min instead of stopping at LR 7.4e-5 three quarters of the way
+      # down.
       #
-      # Task 5 of docs/superpowers/plans/2026-07-28-texgen-vanilla-74k-v2-venus05.md
-      # replaces both from a 100-step probe: T_max = the step count reachable in the
-      # wall-clock budget, floored at 34,380 (what the old baseline actually got at
-      # this same global batch), and max_epochs = ceil(T_max / 560).
+      # Anchored to STEPS, not wall-clock, which is why the rough throughput estimate
+      # does not endanger it. Measured on one L40S: ~3 s per micro-batch steady state
+      # after a ~3 min nvrtc warm-up => ~12 s per optimizer step (4 micro-batches)
+      # => ~1.9 h per 560-step epoch => ~5 days for 62 epochs across 24 h slices.
+      # A throughput error changes how many days, not whether T_max is right.
       #
-      # DO NOT launch the full run before that. Once set, T_max is FROZEN: it is read
-      # from the config on every resume while scheduler.last_epoch comes from the
-      # checkpoint, so editing it mid-run warm-restarts the LR.
-      T_max: 200520
+      # DO NOT EDIT once training starts: T_max is read from the config on every
+      # resume while scheduler.last_epoch comes from the checkpoint, so changing it
+      # mid-run warm-restarts the LR.
+      T_max: 34380
       eta_min: 1e-6
 
 trainer:
   # 4 ranks x micro-batch 8 x 4 = global 128. Lightning counts OPTIMIZER steps as
   # global_step, so steps/epoch and T_max keep their meaning: 71,646 / 128 = 560.
   accumulate_grad_batches: 4
-  max_epochs: 350    # ⚠️ placeholder — see the T_max note above; set in plan Task 5
+  max_epochs: 62     # ceil(34380 / 560); the step budget is what governs
   check_val_every_n_epoch: 1    # 560 steps/epoch at global batch 128
   num_sanity_val_steps: 2
   precision: bf16-mixed
