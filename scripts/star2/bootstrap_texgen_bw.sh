@@ -37,8 +37,18 @@ mkdir -p "$TMPDIR" "$ROOT/log"
 SPCONV_RESULT=UNKNOWN
 FLASH_RESULT=UNKNOWN
 
-say() { echo; echo "=============== $* ==============="; }
-die() { echo; echo "!!!!!!! FATAL: $* !!!!!!!"; summary; exit 1; }
+# Progress is published into the SLURM job Comment as well as stdout. star2's
+# per-node /localscratch is not readable from the head node and no shared path is
+# reliably mounted there, so `scontrol show job <id>` is the only channel that
+# reports progress live. Do NOT monitor by attaching `srun --jobid --overlap` to a
+# running job: when step launch is unhealthy that srun fails and takes the whole
+# job down with it (this killed job 236871 on 2026-07-29).
+mark() {
+    [ -n "${SLURM_JOB_ID:-}" ] && scontrol update jobid=$SLURM_JOB_ID comment="$*" 2>/dev/null
+    return 0
+}
+say() { echo; echo "=============== $* ==============="; mark "$*"; }
+die() { echo; echo "!!!!!!! FATAL: $* !!!!!!!"; mark "FATAL: $*"; summary; exit 1; }
 
 summary() {
     echo
@@ -234,6 +244,7 @@ sys.exit(1 if bad else 0)
 EOF
 [ $? -ne 0 ] && die "import smoke — see FAIL lines above"
 
+mark "DONE spconv=${SPCONV_RESULT%% *} flash=${FLASH_RESULT%% *}"
 say "BOOTSTRAP COMPLETE"
 summary
 echo "env: $D/miniconda3/envs/$ENV_NAME"
