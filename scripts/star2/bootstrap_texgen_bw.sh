@@ -210,6 +210,20 @@ say "[9/11] torchsparse v2.1.0 + torch-2.9 patch"
 # v2.1.0 uses Tensor.type(), removed in torch 2.9. Upstream master fixes it but
 # adds a Rust/maturin dep that will not build on a compute node, so master's fix
 # is applied by hand to the same three .cu files. No operator logic changes.
+# torchsparse's CPU hashmap includes <google/dense_hash_map>, i.e. the sparsehash
+# headers. On vulcan those came from `module load sparsehash` (that is what the line
+# in scripts/vulcan/ENV_SETUP.md is for); star2 has no such module, so job 237206
+# died immediately with
+#   hashmap_cpu.hpp:7:10: fatal error: google/dense_hash_map: No such file or directory
+# Provide it from conda-forge and put $CONDA_PREFIX/include on the C++ search path,
+# since torchsparse's setup.py does not add it on its own.
+if [ ! -f "$CONDA_PREFIX/include/google/dense_hash_map" ]; then
+    echo "installing sparsehash headers (google/dense_hash_map) from conda-forge ..."
+    conda install -y -q -c conda-forge sparsehash || die "sparsehash headers"
+fi
+export CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include:${CPLUS_INCLUDE_PATH:-}"
+echo "dense_hash_map: $([ -f "$CONDA_PREFIX/include/google/dense_hash_map" ] && echo present || echo MISSING)"
+
 if ! python -c "import torchsparse" 2>/dev/null; then
     mkdir -p $D/build_src && cd $D/build_src
     [ -d torchsparse ] || git clone -q https://github.com/mit-han-lab/torchsparse.git || die "torchsparse clone"
