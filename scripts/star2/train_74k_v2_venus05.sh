@@ -18,6 +18,9 @@ set -euo pipefail
 NAME=texgen_vanilla_74k_v2
 CONFIG=${CONFIG:-configs/lightgen_pointuv_256_batch32_emissive_74k_v2_venus05.yaml}
 EXTRA=${EXTRA:-}
+# Which local GPUs Lightning sees. VRAM is a per-GPU quantity, so a 1-GPU probe
+# answers the sizing question and schedules sooner than a 4-GPU reservation.
+GPUS=${GPUS:-0,1,2,3}
 NODE=${NODE:-cs-venus-05}
 GRES=${GRES:-rtx_pro_6000_blackwell_max-q}
 NGPU=${NGPU:-4}
@@ -82,7 +85,10 @@ conda activate texgen-bw
 export CUDA_HOME=/usr/local/cuda-12.9
 export PATH=\$CUDA_HOME/bin:\$PATH
 export LD_LIBRARY_PATH=\$CUDA_HOME/lib64:\${LD_LIBRARY_PATH:-}
+# torch 2.9 renamed this; set both so it is honoured either way. Not cosmetic —
+# the vulcan OOM explicitly recommended expandable_segments.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 export TMPDIR=/localscratch/dya78/tmp
 export HF_HOME=${PROJECT}/.cache/huggingface
 
@@ -110,7 +116,7 @@ mark "training"
 # TRAIN_PID the tee process, so \`wait\` would report TEE's exit status — a crashed
 # trainer would be read as success. Backgrounded bare so the SIGTERM trap can reach
 # it and \$? is python's own status.
-python launch.py --config ${CONFIG} --gpu 0,1,2,3 --train --wandb ${EXTRA} &
+python launch.py --config ${CONFIG} --gpu ${GPUS} --train --wandb ${EXTRA} &
 TRAIN_PID=\$!
 wait "\$TRAIN_PID"
 EXIT_CODE=\$?
