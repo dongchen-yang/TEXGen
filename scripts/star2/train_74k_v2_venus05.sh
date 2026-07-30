@@ -128,6 +128,18 @@ cd ${PROJECT}/TEXGen
 git pull --ff-only origin ${BRANCH} || true
 echo "TEXGen HEAD: \$(git log --oneline -1)"
 
+# wandb has no credentials on a star2 compute node — home is per-node, so there is no
+# ~/.netrc and no WANDB_API_KEY. Without this guard the run dies at startup with
+#   wandb.errors.errors.UsageError: No API key configured.
+# (job 237309, crash 2/3). An API key is a credential and does not go on the cluster;
+# AGENTS.md's convention for no-auth nodes is an offline run synced afterwards:
+#   wandb sync -p lightgen <offline-run-dir>
+if [ -z "\${WANDB_API_KEY:-}" ] && [ ! -f "\$HOME/.netrc" ]; then
+    export WANDB_MODE=offline
+    echo "[wandb] no credentials on this node — OFFLINE; sync later with:"
+    echo "        wandb sync -p lightgen ${PROJECT}/TEXGen/wandb/offline-run-*"
+fi
+
 mark "training"
 # No \`| tee\`: SLURM's --output already persists everything, and piping would make
 # TRAIN_PID the tee process, so \`wait\` would report TEE's exit status — a crashed
