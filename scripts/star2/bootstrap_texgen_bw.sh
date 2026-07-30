@@ -60,7 +60,9 @@ say() { echo; echo "=============== $* ==============="; STAGE="$*"; mark "$*"; 
 FAILFILE="$ROOT/log/last_failure.txt"
 STAGE="init"
 STAGE_LOG=""
-build_log() { STAGE_LOG="$ROOT/log/build_$1.log"; echo "$STAGE_LOG"; }
+# NOTE: assign STAGE_LOG directly at each call site. A helper used as
+# `> "$(build_log x)"` runs in a SUBSHELL, so the assignment never reaches the
+# parent and die() reports no first error (observed in job 237224).
 first_error() {
     [ -n "${1:-}" ] && [ -f "$1" ] || return 0
     grep -aiE "fatal error|error:|No such file|cannot open|undefined reference|ModuleNotFound" "$1" \
@@ -230,7 +232,8 @@ if [ "$SETUP_VER" = "0.dev0+unknown" ] || [ -z "$SETUP_VER" ]; then
 fi
 
 say "[8/11] torch_scatter"
-python -c "import torch_scatter" 2>/dev/null || pip install --no-build-isolation torch-scatter > "$(build_log torch_scatter)" 2>&1 || die "torch_scatter build"
+STAGE_LOG="$ROOT/log/build_torch_scatter.log"
+python -c "import torch_scatter" 2>/dev/null || pip install --no-build-isolation torch-scatter > "$STAGE_LOG" 2>&1 || die "torch_scatter build"
 python - <<'EOF' || exit 1
 import torch, torch_scatter
 src = torch.randn(100, 8, device='cuda'); idx = torch.randint(0, 10, (100,), device='cuda')
@@ -264,7 +267,8 @@ if ! python -c "import torchsparse" 2>/dev/null; then
         sed -i 's/\.type(), "/.scalar_type(), "/g' "$f"; echo "patched: $f"
     done
     echo "unpatched remaining: $(grep -rn '\.type(), "' torchsparse/backend/ 2>/dev/null | wc -l)  (expect 0)"
-    pip install --no-build-isolation . > "$(build_log torchsparse)" 2>&1 || die "torchsparse build"
+    STAGE_LOG="$ROOT/log/build_torchsparse.log"
+    pip install --no-build-isolation . > "$STAGE_LOG" 2>&1 || die "torchsparse build"
     cd "$ROOT"
 fi
 python - <<'EOF' || exit 1
@@ -282,7 +286,8 @@ say "[10/11] nvdiffrast (module-level import at texgen_network.py:15)"
 if ! python -c "import nvdiffrast.torch" 2>/dev/null; then
     mkdir -p $D/build_src && cd $D/build_src
     [ -d nvdiffrast ] || git clone -q https://github.com/NVlabs/nvdiffrast.git || die "nvdiffrast clone"
-    pip install ./nvdiffrast > "$(build_log nvdiffrast)" 2>&1 || die "nvdiffrast build"
+    STAGE_LOG="$ROOT/log/build_nvdiffrast.log"
+    pip install ./nvdiffrast > "$STAGE_LOG" 2>&1 || die "nvdiffrast build"
     cd "$ROOT"
 fi
 python -c "import nvdiffrast.torch as dr; print('NVDIFFRAST OK', dr.RasterizeCudaContext() is not None)" || die "nvdiffrast cuda context"
