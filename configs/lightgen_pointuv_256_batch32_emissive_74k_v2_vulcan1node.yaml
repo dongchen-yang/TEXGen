@@ -186,5 +186,5 @@ checkpoint:
 
 wandb:
   project: "LightGen"
-  tags: ["baseline", "from_scratch", "emissive_74k", "pinned_val_test"]
-  notes: "74k scaling: 73251 train / 112 val / 109 test (val+test pinned to 1k baseline). 4× H100 DDP, per-GPU bs=32, global bs=128, 256x256. Extended to 350 epochs on 2026-04-30 to match paper-equivalent compute; LR/WD unchanged from original 5e-4/0.01."
+  tags: ["baseline", "from_scratch", "emissive_74k_v2", "newbake", "stratified_split"]
+  notes: "TEXGen vanilla on the REGENERATED uv_voxel 74k bake (_v2). 71,646 train / 387 val / 388 test from the availability-pinned newbake stratified split — the SAME split both emission DiTs train on, so this is the first TEXGen checkpoint that can be compared with them head-to-head (the superseded 74k run used the pinned split, whose train set contains 378 of the 381 evaluation shapes). Site: vulcan (1 node x 4 L40S 48 GB); micro-batch 8 x accumulate_grad_batches 4; global batch 128; 560 steps/epoch; 256x256. T_max=34380 = the compute the superseded checkpoint actually received. LR/WD 5e-4/0.01 unchanged."

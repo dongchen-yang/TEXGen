@@ -60,11 +60,20 @@ data:
   uv_width: 256
   batch_size: 32         # per-GPU; 1 node x 4 Pro 6000 = 4 ranks -> global 128
   eval_batch_size: 16    # global 64
-  # Peak VRAM at per-GPU 32 is ~58.8 GB (static ~14 GB + 1.37 GB/sample, measured on
-  # H100-80). That leaves ~37 GB idle on a 96 GB card and that is fine: the lightgen
-  # forward path has no activation checkpointing to trade the headroom against, and
-  # at a fixed global batch a larger micro-batch would mean FEWER ranks, i.e. slower.
-  # Throughput scales with GPU count, not with VRAM occupancy.
+  # ⚠️ per-GPU 32 is GATED ON A VRAM PROBE, not on the documented H100 model — that
+  # model (static ~14 GB + 1.37 GB/sample) was measured to underestimate badly on the
+  # torch-2.9 stack: it predicted 35.9 GB for micro-batch 16 and the real peak was
+  # 41.99 GB, which OOM'd an L40S (vulcan job 217827).
+  #
+  # Fitting the two L40S measurements instead — peak 30.26 GB at 8, 41.99 GB at 16 —
+  # gives slope ~1.47 GB/sample and intercept ~18.5 GB, so per-GPU 32 projects to
+  # ~65 GB. That fits a 96 GB card with ~31 GB spare, and it matches the reference
+  # run's per-GPU batch exactly with no accumulation overhead.
+  #
+  # It is still an extrapolation from a different GPU. Run a short probe on this node
+  # first. If it OOMs, fall back to batch_size 16 with trainer.accumulate_grad_batches
+  # 2 (~42 GB, certainly safe) — the global batch is 128 either way, so nothing about
+  # the schedule or the comparability changes.
   #
   # 6 workers x 4 ranks = 24 of the 48 allocated CPUs (node has 128); bump if the
   # loader lags the GPUs.
@@ -137,24 +146,23 @@ system:
     name: CosineAnnealingLR
     interval: step
     args:
-      # ⚠️ NOT YET CALIBRATED FOR THIS HARDWARE. These two values are inherited
-      # verbatim from the 4x H100 reference config (where 350 epochs x 573
-      # steps/epoch = 200,520). This run has 560 steps/epoch, and Pro 6000 Max-Q
-      # throughput has not been measured yet.
+      # FROZEN 2026-07-29. T_max = 34,380 optimizer steps = exactly the compute the
+      # superseded baseline actually received (its checkpoint stores global_step
+      # 34,380 = 573 steps/epoch x 60 epochs at the same global batch 128). So this
+      # run replaces that model at equal compute, and unlike it the cosine reaches
+      # eta_min instead of stopping at LR 7.4e-5 three quarters of the way down.
       #
-      # Task 5 of docs/superpowers/plans/2026-07-28-texgen-vanilla-74k-v2-venus05.md
-      # replaces both from a 100-step probe: T_max = the step count reachable in the
-      # wall-clock budget, floored at 34,380 (what the old baseline actually got at
-      # this same global batch), and max_epochs = ceil(T_max / 560).
+      # Anchored to STEPS, not wall-clock, so it does not depend on a throughput
+      # estimate. max_epochs = ceil(34380 / 560) = 62.
       #
-      # DO NOT launch the full run before that. Once set, T_max is FROZEN: it is read
-      # from the config on every resume while scheduler.last_epoch comes from the
-      # checkpoint, so editing it mid-run warm-restarts the LR.
-      T_max: 200520
+      # DO NOT EDIT once training starts: T_max is read from the config on every
+      # resume while scheduler.last_epoch comes from the checkpoint, so changing it
+      # mid-run warm-restarts the LR — the exact defect the old run carried.
+      T_max: 34380
       eta_min: 1e-6
 
 trainer:
-  max_epochs: 350    # ⚠️ placeholder — see the T_max note above; set in plan Task 5
+  max_epochs: 62     # ceil(34380 / 560); the step budget is what governs
   check_val_every_n_epoch: 1    # 560 steps/epoch at global batch 128
   num_sanity_val_steps: 2
   precision: bf16-mixed
@@ -173,5 +181,5 @@ checkpoint:
 
 wandb:
   project: "LightGen"
-  tags: ["baseline", "from_scratch", "emissive_74k", "pinned_val_test"]
-  notes: "74k scaling: 73251 train / 112 val / 109 test (val+test pinned to 1k baseline). 4× H100 DDP, per-GPU bs=32, global bs=128, 256x256. Extended to 350 epochs on 2026-04-30 to match paper-equivalent compute; LR/WD unchanged from original 5e-4/0.01."
+  tags: ["baseline", "from_scratch", "emissive_74k_v2", "newbake", "stratified_split"]
+  notes: "TEXGen vanilla on the REGENERATED uv_voxel 74k bake (_v2). 71,646 train / 387 val / 388 test from the availability-pinned newbake stratified split — the SAME split both emission DiTs train on, so this is the first TEXGen checkpoint that can be compared with them head-to-head (the superseded 74k run used the pinned split, whose train set contains 378 of the 381 evaluation shapes). Site: cs-venus-05 (4x RTX PRO 6000 Blackwell Max-Q 96 GB); per-GPU bs=32, no accumulation; global batch 128; 560 steps/epoch; 256x256. T_max=34380 = the compute the superseded checkpoint actually received. LR/WD 5e-4/0.01 unchanged."
