@@ -91,6 +91,16 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export TMPDIR=/localscratch/dya78/tmp
 export HF_HOME=${PROJECT}/.cache/huggingface
+# The CLIP tokenizer/text-encoder come from stabilityai/stable-diffusion-3.5-large,
+# which is a GATED repo: without a cache the node gets
+#   401 Unauthorized ... /stable-diffusion-3.5-large/resolve/main/tokenizer/vocab.json
+#   huggingface_hub.errors.GatedRepoError
+# (job 237299 crashed exactly there — it was NOT an OOM). The cache is staged from
+# the workstation via jupiter rather than putting an HF token on the cluster, and
+# OFFLINE stops any attempt to re-validate against the hub. vulcan's script sets the
+# same flag for the same reason.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 
 # flash-attn is not available on sm_120 (two source builds, ~45 min and ~65 min,
 # both left it unimportable — jobs 236972/237121, confirmed by 237198). This selects
