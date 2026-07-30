@@ -25,7 +25,11 @@ NODE=${NODE:-cs-venus-05}
 GRES=${GRES:-rtx_pro_6000_blackwell_max-q}
 NGPU=${NGPU:-4}
 CPUS=${CPUS:-48}
-MEM=${MEM:-200G}
+# 200G was not enough: job 237314 died OUT_OF_MEMORY with MaxRSS 209,710,500K, i.e.
+# exactly the 200G ceiling. 28 processes (4 ranks x 1 main + 6 workers) each hold a
+# copy of the 824,858-row sample index built from the parquet, and wandb online adds
+# upload buffers on top. The node has 503 GB and is otherwise idle; 400G leaves ~100.
+MEM=${MEM:-400G}
 WALL=${WALL:-7-00:00:00}
 PROJECT=/localscratch/dya78/lightgen
 BRANCH=texgen-74k-v2-venus05
