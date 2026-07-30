@@ -92,6 +92,13 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 export TMPDIR=/localscratch/dya78/tmp
 export HF_HOME=${PROJECT}/.cache/huggingface
 
+# flash-attn is not available on sm_120 (two source builds, ~45 min and ~65 min,
+# both left it unimportable — jobs 236972/237121, confirmed by 237198). This selects
+# the dense attention path instead. It is a recorded DEVIATION from the reference run:
+# numerics differ in the safe direction (no .half() cast) and windowing uses
+# min(patch_size_max, n_points) rather than a fixed patch size.
+export TEXGEN_ENABLE_FLASH=0
+
 # Lightning: without this it detects SLURM and uses its SLURM launcher, which
 # requires ntasks == devices. One task with 4 devices then hangs at
 # "Initializing distributed" — which looks exactly like a NCCL problem and is not

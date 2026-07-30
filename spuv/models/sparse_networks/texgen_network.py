@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Optional, Tuple, Union
 from dataclasses import dataclass
@@ -26,6 +27,26 @@ from spuv.models.renderers.rasterize import NVDiffRasterizerContext
 from spuv.utils.misc import get_device
 from spuv.utils.mesh_utils import uv_padding
 from spuv.utils.misc import time_recorder as tr
+
+# Escape hatch for GPUs where flash-attn is unavailable. flash-attn 2.x targets
+# Ampere/Ada/Hopper; on RTX PRO 6000 Blackwell (sm_120) the source build ran ~45 min
+# in job 236972 and ~65 min in 237121 and left flash_attn unimportable both times
+# (verified independently by job 237198).
+#
+# TEXGEN_ENABLE_FLASH=0 selects the dense attention branch that already exists at
+# ptv3_model_texgen.py:401-418. Two differences worth knowing, neither of which
+# changes the architecture:
+#   * numerics move in the SAFE direction — the flash branch casts qkv to .half(),
+#     the dense branch stays in the autocast dtype (bf16 here);
+#   * windowing differs — the flash branch uses a fixed patch_size, the dense branch
+#     sets patch_size=0 and attends over min(patch_size_max, n_points), so a short
+#     point set gets a full window instead of a padded one.
+# Record the deviation in the run notes whenever this is used.
+#
+# An env var rather than a config key is deliberate: UVPTVAttnStage.__init__ accepts
+# **kwargs but drops them when constructing UV_DitBlock, so a config-driven flag
+# would mean changing three signatures plus the backbone Config dataclass.
+_ENABLE_FLASH = os.environ.get("TEXGEN_ENABLE_FLASH", "1") not in ("0", "false", "False")
 from spuv.utils.base import BaseModule
 from spuv.utils.typing import *
 
@@ -750,7 +771,7 @@ class UV_DitBlock(nn.Module):
                     qkv_bias=True,
                     drop_path=0.3,
                     order_index=i % len(self.order),
-                    enable_flash=True,
+                    enable_flash=_ENABLE_FLASH,
                     upcast_attention=False,
                     upcast_softmax=False,
                     qk_norm=True,

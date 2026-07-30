@@ -142,7 +142,15 @@ else
 fi
 
 say "[5/11] flash-attn (has a fallback — failure is recorded, not fatal)"
-if ! python -c "import flash_attn" 2>/dev/null; then
+# SKIP_FLASH=1 goes straight to the fallback. Set it after a build has already been
+# tried and failed: on sm_120 the source build ran ~45 min in job 236972 and ~65 min
+# in 237121 and left flash_attn unimportable both times (verified independently by
+# job 237198). flash-attn 2.x targets Ampere/Ada/Hopper, so Blackwell being
+# unsupported is the expected outcome, not a misconfiguration — and there IS a dense
+# attention path (ptv3_model_texgen.py:401-418), reached via TEXGEN_ENABLE_FLASH=0.
+if [ "${SKIP_FLASH:-0}" = "1" ] && ! python -c "import flash_attn" 2>/dev/null; then
+    echo "SKIP_FLASH=1 — not attempting the build; the dense attention fallback will be used"
+elif ! python -c "import flash_attn" 2>/dev/null; then
     pip install -q packaging ninja
     echo "building flash-attn from source (expect ~1h)..."
     pip install flash-attn --no-build-isolation
@@ -169,7 +177,12 @@ pip install -q \
     pytorch-lightning omegaconf==2.3.0 einops timm \
     transformers==4.28.1 diffusers==0.28.0 huggingface_hub==0.25.2 accelerate \
     jaxtyping typeguard wandb pandas pyarrow \
-    opencv-python==4.9.0.80 imageio matplotlib trimesh Pillow scipy || die "python layer"
+    imageio matplotlib trimesh Pillow scipy || die "python layer"
+# opencv separately and unpinned: the inherited 4.9.0.80 pin has no py3.11 wheel for
+# this platform, so pip fell through to a source build and left cv2 unimportable while
+# the packages listed before it installed fine (job 237198 measured cv2=0, timm=1).
+# texgen_test.py only needs `import cv2`, not a specific version.
+python -c "import cv2" 2>/dev/null || pip install -q opencv-python-headless || die "opencv"
 pip install -q lpips --no-deps || die "lpips"
 
 say "[7/11] setuptools sanity (broken dist-info kills every source build)"
