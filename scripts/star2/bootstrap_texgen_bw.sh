@@ -31,7 +31,11 @@ export CUDA_HOME=/usr/local/cuda-${CUDA_VER}
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}
 export TORCH_CUDA_ARCH_LIST="12.0"
-export MAX_JOBS=8
+# Overridable. Each nvcc worker compiling Blackwell kernels can take several GB of
+# HOST RAM, and 8 of them killed job 236972 with SLURM OUT_OF_MEMORY at 64 GB after
+# nearly two hours. Pair a lower value with a larger --mem rather than trusting
+# either alone.
+export MAX_JOBS=${MAX_JOBS:-8}
 mkdir -p "$TMPDIR" "$ROOT/log"
 
 SPCONV_RESULT=UNKNOWN
