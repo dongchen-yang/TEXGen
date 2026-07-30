@@ -51,8 +51,40 @@ mark() {
     [ -n "${SLURM_JOB_ID:-}" ] && scontrol update jobid=$SLURM_JOB_ID comment="$*" 2>/dev/null
     return 0
 }
-say() { echo; echo "=============== $* ==============="; mark "$*"; }
-die() { echo; echo "!!!!!!! FATAL: $* !!!!!!!"; mark "FATAL: $*"; summary; exit 1; }
+say() { echo; echo "=============== $* ==============="; STAGE="$*"; mark "$*"; }
+
+# Build output goes to its own file so a failure can be diagnosed from one line
+# instead of a chain of probe jobs. The Comment channel does NOT survive the job
+# (sacct does not store it), and /localscratch is unreadable from the head node, so
+# the reason is also appended to a PERSISTENT file that the next job publishes.
+FAILFILE="$ROOT/log/last_failure.txt"
+STAGE="init"
+STAGE_LOG=""
+build_log() { STAGE_LOG="$ROOT/log/build_$1.log"; echo "$STAGE_LOG"; }
+first_error() {
+    [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+    grep -aiE "fatal error|error:|No such file|cannot open|undefined reference|ModuleNotFound" "$1" \
+        2>/dev/null | head -1 | cut -c1-240
+}
+
+die() {
+    local why="$*"
+    local detail
+    detail=$(first_error "$STAGE_LOG")
+    echo
+    echo "!!!!!!! FATAL: $why !!!!!!!"
+    [ -n "$detail" ] && echo "!!!!!!! first error: $detail"
+    mkdir -p "$ROOT/log"
+    {
+        echo "=== $(date -Iseconds) job ${SLURM_JOB_ID:-?} stage='$STAGE' ==="
+        echo "reason: $why"
+        [ -n "$detail" ] && echo "first_error: $detail"
+        [ -n "$STAGE_LOG" ] && [ -f "$STAGE_LOG" ] && { echo "--- tail of $STAGE_LOG ---"; tail -25 "$STAGE_LOG"; }
+    } >> "$FAILFILE"
+    mark "FATAL: $why"
+    summary
+    exit 1
+}
 
 summary() {
     echo
@@ -198,7 +230,7 @@ if [ "$SETUP_VER" = "0.dev0+unknown" ] || [ -z "$SETUP_VER" ]; then
 fi
 
 say "[8/11] torch_scatter"
-python -c "import torch_scatter" 2>/dev/null || pip install --no-build-isolation torch-scatter || die "torch_scatter build"
+python -c "import torch_scatter" 2>/dev/null || pip install --no-build-isolation torch-scatter > "$(build_log torch_scatter)" 2>&1 || die "torch_scatter build"
 python - <<'EOF' || exit 1
 import torch, torch_scatter
 src = torch.randn(100, 8, device='cuda'); idx = torch.randint(0, 10, (100,), device='cuda')
@@ -232,7 +264,7 @@ if ! python -c "import torchsparse" 2>/dev/null; then
         sed -i 's/\.type(), "/.scalar_type(), "/g' "$f"; echo "patched: $f"
     done
     echo "unpatched remaining: $(grep -rn '\.type(), "' torchsparse/backend/ 2>/dev/null | wc -l)  (expect 0)"
-    pip install --no-build-isolation . || die "torchsparse build"
+    pip install --no-build-isolation . > "$(build_log torchsparse)" 2>&1 || die "torchsparse build"
     cd "$ROOT"
 fi
 python - <<'EOF' || exit 1
@@ -250,7 +282,7 @@ say "[10/11] nvdiffrast (module-level import at texgen_network.py:15)"
 if ! python -c "import nvdiffrast.torch" 2>/dev/null; then
     mkdir -p $D/build_src && cd $D/build_src
     [ -d nvdiffrast ] || git clone -q https://github.com/NVlabs/nvdiffrast.git || die "nvdiffrast clone"
-    pip install -q ./nvdiffrast || die "nvdiffrast build"
+    pip install ./nvdiffrast > "$(build_log nvdiffrast)" 2>&1 || die "nvdiffrast build"
     cd "$ROOT"
 fi
 python -c "import nvdiffrast.torch as dr; print('NVDIFFRAST OK', dr.RasterizeCudaContext() is not None)" || die "nvdiffrast cuda context"
