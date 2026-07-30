@@ -60,20 +60,18 @@ data:
   uv_width: 256
   batch_size: 32         # per-GPU; 1 node x 4 Pro 6000 = 4 ranks -> global 128
   eval_batch_size: 16    # global 64
-  # ⚠️ per-GPU 32 is GATED ON A VRAM PROBE, not on the documented H100 model — that
-  # model (static ~14 GB + 1.37 GB/sample) was measured to underestimate badly on the
-  # torch-2.9 stack: it predicted 35.9 GB for micro-batch 16 and the real peak was
-  # 41.99 GB, which OOM'd an L40S (vulcan job 217827).
+  # per-GPU 32 CONFIRMED BY MEASUREMENT on cs-venus-05 (2026-07-29, 4 training steps
+  # on one RTX PRO 6000 Blackwell Max-Q, 97,887 MiB):
+  #   fit_start        allocated  6.64 GB
+  #   before_backward  allocated 54.06 GB, free 40.91 GB
+  #   epoch_end        PEAK      69.23 GB  -> ~26 GB headroom, no OOM
+  # So this matches the reference run's per-GPU batch exactly, with no accumulation.
   #
-  # Fitting the two L40S measurements instead — peak 30.26 GB at 8, 41.99 GB at 16 —
-  # gives slope ~1.47 GB/sample and intercept ~18.5 GB, so per-GPU 32 projects to
-  # ~65 GB. That fits a 96 GB card with ~31 GB spare, and it matches the reference
-  # run's per-GPU batch exactly with no accumulation overhead.
-  #
-  # It is still an extrapolation from a different GPU. Run a short probe on this node
-  # first. If it OOMs, fall back to batch_size 16 with trainer.accumulate_grad_batches
-  # 2 (~42 GB, certainly safe) — the global batch is 128 either way, so nothing about
-  # the schedule or the comparability changes.
+  # Do NOT re-derive this from the H100 table in TEXGen/CLAUDE.md (static ~14 GB +
+  # 1.37 GB/sample): that model underestimates on the torch-2.9 stack — it predicted
+  # 35.9 GB for micro-batch 16 where an L40S actually peaked at 41.99 GB and OOM'd.
+  # A two-point fit of real L40S measurements projected ~65 GB here; the measured
+  # 69.23 GB is close, but the number in this config is the measured one.
   #
   # 6 workers x 4 ranks = 24 of the 48 allocated CPUs (node has 128); bump if the
   # loader lags the GPUs.
