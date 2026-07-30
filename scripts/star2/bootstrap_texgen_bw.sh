@@ -287,7 +287,13 @@ if ! python -c "import nvdiffrast.torch" 2>/dev/null; then
     mkdir -p $D/build_src && cd $D/build_src
     [ -d nvdiffrast ] || git clone -q https://github.com/NVlabs/nvdiffrast.git || die "nvdiffrast clone"
     STAGE_LOG="$ROOT/log/build_nvdiffrast.log"
-    pip install ./nvdiffrast > "$STAGE_LOG" 2>&1 || die "nvdiffrast build"
+    # --no-build-isolation, like torch_scatter and torchsparse above. With isolation
+    # pip runs the PEP 517 hook in a clean env where torch is absent, and nvdiffrast's
+    # setup.py needs it to configure the CUDA extension, so it fails before compiling:
+    #   ERROR: Failed to build '.../nvdiffrast' when getting requirements to build wheel
+    # (job 237240, reproduced by hand). vulcan's recipe used plain `pip install` and got
+    # away with it under its module environment; star2 does not.
+    pip install --no-build-isolation ./nvdiffrast > "$STAGE_LOG" 2>&1 || die "nvdiffrast build"
     cd "$ROOT"
 fi
 python -c "import nvdiffrast.torch as dr; print('NVDIFFRAST OK', dr.RasterizeCudaContext() is not None)" || die "nvdiffrast cuda context"
