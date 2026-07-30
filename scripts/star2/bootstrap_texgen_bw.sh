@@ -211,7 +211,9 @@ pip install -q \
     pytorch-lightning omegaconf==2.3.0 einops timm \
     transformers==4.28.1 diffusers==0.28.0 huggingface_hub==0.25.2 accelerate \
     jaxtyping typeguard wandb pandas pyarrow \
-    imageio matplotlib trimesh Pillow scipy || die "python layer"
+    imageio matplotlib trimesh Pillow scipy \
+    OpenEXR addict h5py pyyaml tensorboard tensorboardX termcolor plyfile \
+    safetensors torchdyn torch-geometric yapf einops || die "python layer"
 # opencv separately and unpinned: the inherited 4.9.0.80 pin has no py3.11 wheel for
 # this platform, so pip fell through to a source build and left cv2 unimportable while
 # the packages listed before it installed fine (job 237198 measured cv2=0, timm=1).
@@ -256,8 +258,11 @@ if [ ! -f "$CONDA_PREFIX/include/google/dense_hash_map" ]; then
     echo "installing sparsehash headers (google/dense_hash_map) from conda-forge ..."
     conda install -y -q -c conda-forge sparsehash || die "sparsehash headers"
 fi
-export CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include:${CPLUS_INCLUDE_PATH:-}"
 echo "dense_hash_map: $([ -f "$CONDA_PREFIX/include/google/dense_hash_map" ] && echo present || echo MISSING)"
+# Scoped to the torchsparse command below, NOT exported globally. Putting conda's
+# include dir on the C++ search path for the whole script shadows system/CUDA headers
+# and broke the nvdiffrast build (jobs 237231/237243 failed there; the identical pip
+# command succeeded by hand without this in the environment).
 
 if ! python -c "import torchsparse" 2>/dev/null; then
     mkdir -p $D/build_src && cd $D/build_src
@@ -268,7 +273,8 @@ if ! python -c "import torchsparse" 2>/dev/null; then
     done
     echo "unpatched remaining: $(grep -rn '\.type(), "' torchsparse/backend/ 2>/dev/null | wc -l)  (expect 0)"
     STAGE_LOG="$ROOT/log/build_torchsparse.log"
-    pip install --no-build-isolation . > "$STAGE_LOG" 2>&1 || die "torchsparse build"
+    CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include:${CPLUS_INCLUDE_PATH:-}" \
+        pip install --no-build-isolation . > "$STAGE_LOG" 2>&1 || die "torchsparse build"
     cd "$ROOT"
 fi
 python - <<'EOF' || exit 1
