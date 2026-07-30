@@ -295,17 +295,38 @@ def main(args, extras) -> None:
                 # that gets interleaved with new data at incorrect step numbers.
                 # NOTE: wandb_config['dir'] must be resolved BEFORE this cleanup so we
                 # search the same directory that the previous run wrote its cache to.
-                import glob as glob_module
-                import shutil
-                wandb_dir = wandb_config.get('dir', '.')
-                stale_dirs = glob_module.glob(os.path.join(wandb_dir, 'wandb', f'*-{wandb_run_id}'))
-                # Also search the default ./wandb/ in case dir was not set in a previous run
-                if wandb_dir != '.':
-                    stale_dirs += glob_module.glob(os.path.join('.', 'wandb', f'*-{wandb_run_id}'))
-                for stale_dir in stale_dirs:
-                    if os.path.isdir(stale_dir):
-                        spuv.info(f"Cleaning stale wandb cache to prevent data oscillation: {stale_dir}")
-                        shutil.rmtree(stale_dir, ignore_errors=True)
+                #
+                # TWO GUARDS, both learned the hard way on cs-venus-05 (run yylyobx0):
+                #
+                # 1. OFFLINE: in offline mode the local cache is not a stale artifact, it
+                #    IS the run's only copy of the data. Deleting it on every resume throws
+                #    away every metric recorded so far and leaves nothing to `wandb sync`.
+                #    Online mode has already uploaded, so there the delete is harmless.
+                #
+                # 2. RANK: all four ranks execute main(), so without a rank guard ranks
+                #    1..3 run this cleanup a moment after rank 0 has created the live
+                #    directory — and since the glob keys on the run id, which they share,
+                #    they delete the directory rank 0 is actively writing. Observed as a
+                #    dangling wandb/latest-run symlink with no target and zero data on disk.
+                _offline = os.environ.get("WANDB_MODE", "").lower() in ("offline", "dryrun")
+                _lrank = int(os.environ.get("LOCAL_RANK",
+                             os.environ.get("SLURM_LOCALID", "0")))
+                if _offline:
+                    spuv.info("wandb offline: keeping the local cache — it is the data, not a stale artifact")
+                elif _lrank != 0:
+                    pass  # only rank 0 touches wandb state
+                else:
+                    import glob as glob_module
+                    import shutil
+                    wandb_dir = wandb_config.get('dir', '.')
+                    stale_dirs = glob_module.glob(os.path.join(wandb_dir, 'wandb', f'*-{wandb_run_id}'))
+                    # Also search the default ./wandb/ in case dir was not set in a previous run
+                    if wandb_dir != '.':
+                        stale_dirs += glob_module.glob(os.path.join('.', 'wandb', f'*-{wandb_run_id}'))
+                    for stale_dir in stale_dirs:
+                        if os.path.isdir(stale_dir):
+                            spuv.info(f"Cleaning stale wandb cache to prevent data oscillation: {stale_dir}")
+                            shutil.rmtree(stale_dir, ignore_errors=True)
 
             # Pass through any remaining wandb settings (except id and resume which are handled above)
             if hasattr(cfg, 'wandb') and cfg.wandb:
