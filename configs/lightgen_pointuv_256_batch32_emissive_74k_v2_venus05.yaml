@@ -175,7 +175,19 @@ trainer:
 checkpoint:
   dirpath: "/localscratch/dya78/lightgen/TEXGen/output_emissive_74k_vanilla_v2/"
   save_last: true
-  save_top_k: 5
+  # -1 = keep EVERY scheduled save, unconditionally.
+  #
+  # save_top_k: 5 with monitor: val/psnr silently STOPPED checkpointing entirely.
+  # val/psnr peaks early on sparse emission (an all-dark prediction scores well) and
+  # then oscillates lower, so once five early checkpoints held the top-5 slots no
+  # later epoch could beat them — Lightning skipped the save, and last.ckpt stopped
+  # refreshing with it. Observed on job 237655: nothing written between epoch 24 and
+  # epoch 32, and on that trajectory the run would have finished 62 epochs with no
+  # final checkpoint at all, since epoch 59 (the last scheduled save) is subject to
+  # the same suppression.
+  #
+  # 12 saves x 12.4 GB = ~150 GB, against 1.8 TB free on /localscratch.
+  save_top_k: -1
   every_n_epochs: 5
   monitor: "val/psnr"
   mode: "max"
