@@ -217,6 +217,35 @@ checkpoint.dirpath            # external checkpoint storage (full training on /s
 checkpoint.monitor            # val/psnr
 ```
 
+### ⚠️ `save_top_k` + `monitor: val/psnr` can stop checkpointing entirely
+
+Measured on cs-venus-05, job 237655: **no checkpoint was written between epoch 24
+and epoch 32**, and `last.ckpt` stopped refreshing with them. The scheduler-state log
+shows saves at steps 5600, 8400, 11200, 14000 and then nothing.
+
+The mechanism is specific to emission and applies to **every config in this repo**
+that pairs `monitor: "val/psnr"` with a positive `save_top_k` — which as of 2026-07-31
+is all of them:
+
+1. Emission is sparse: most GT texels are ~0, so an almost-dark prediction already
+   scores well. `val/psnr` therefore **peaks in the first few epochs** (19.10 at
+   epoch 5 here) and then oscillates *lower* as the model learns to actually emit.
+2. Once `save_top_k` early checkpoints hold every slot, no later epoch can displace
+   them, so Lightning skips the save.
+3. `save_last: true` does **not** rescue you — it does not fire independently of the
+   top-k save event.
+
+The danger is not only losing progress to a fault. With `max_epochs: 62` and
+`every_n_epochs: 5`, epoch 59 is the last scheduled save and is subject to the same
+suppression, so a run can complete its full budget and leave **no final checkpoint at
+all**.
+
+**Use `save_top_k: -1`** for any emission run of real length (12 saves × 12.4 GB ≈
+150 GB at `every_n_epochs: 5`). Both `_v2` configs now do. And regardless of the
+setting, **do not pick a checkpoint by "best val/psnr"** — that metric rewards
+predicting nothing. Select on the point-sampled surface IoU used in
+`docs/status/evaluation-results.md`, or take the final checkpoint.
+
 ### Overfit vs Full Training Config Differences
 | Setting | Overfit | Full |
 |---------|---------|------|

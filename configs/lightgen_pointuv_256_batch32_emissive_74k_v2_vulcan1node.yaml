@@ -178,7 +178,10 @@ trainer:
 checkpoint:
   dirpath: "/scratch/dya78/lightgen_repo/TEXGen/output_emissive_74k_vanilla_v2_vulcan/"
   save_last: true
-  save_top_k: 5
+  # -1, not 5 — see the checkpoint-selection warning in TEXGen/CLAUDE.md. With
+  # monitor: val/psnr on sparse emission, five early checkpoints occupy the top-k
+  # slots permanently and Lightning stops saving altogether, last.ckpt included.
+  save_top_k: -1
   every_n_epochs: 5
   monitor: "val/psnr"
   mode: "max"
