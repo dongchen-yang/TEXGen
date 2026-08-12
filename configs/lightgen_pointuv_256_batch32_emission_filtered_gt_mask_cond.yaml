@@ -73,6 +73,7 @@ system:
     # baked_texture = albedo(3) + metallic(1) + roughness(1)
     # gt_emission_mask = binary mask where GT emission > 0
     in_channels: 13
+    use_gt_emission_mask_cond: true
     out_channels: 3  # emission RGB
     
     # Architecture settings (same as TEXGen)

@@ -83,6 +83,20 @@ class LightGenDataModuleConfig:
 
     vertex_transformation: bool = False
     use_precomputed_clip: bool = False  # Load precomputed CLIP embeddings instead of raw thumbnails
+    # Emit alpha_map (glTF opacity) as an extra conditioning channel. Sourced from the npz
+    # `alpha` key when present, else an `alpha.npy` sidecar beside it. There is no fallback
+    # value: a run configured for alpha that cannot find it must fail, not train on ones.
+    use_alpha: bool = False
+
+
+class AlphaUnavailable(RuntimeError):
+    """Alpha was requested but could not be sourced, or is not the expected uint8 plane.
+
+    Raised instead of a generic exception so __getitem__ can re-raise it rather than
+    swallowing it. A swallowed alpha failure is invisible: the sample becomes None,
+    collate_fn drops it before it inspects any keys, and the surviving samples stack
+    cleanly -- so training would silently continue on a smaller, biased batch.
+    """
 
 
 class LightGenDataset(Dataset):
@@ -103,7 +117,56 @@ class LightGenDataset(Dataset):
             self.all_samples = self._apply_indices(self.all_samples, self.cfg.val_indices)
         elif self.split == "test" and self.cfg.test_indices is not None:
             self.all_samples = self._apply_indices(self.all_samples, self.cfg.test_indices)
-    
+
+        if self.cfg.use_alpha and len(self.all_samples) > 0:
+            self._assert_alpha_available(self.all_samples[0])
+
+    def _assert_alpha_available(self, sample_info):
+        """Fail loudly at construction if alpha cannot be sourced.
+
+        __getitem__ swallows every exception and returns None, which collate_fn then drops
+        from the batch -- so without this check a data root with no alpha does not crash, it
+        silently shrinks every batch for the whole run.
+        """
+        self._load_alpha(sample_info["npz_file"], None)
+
+    @staticmethod
+    def _validate_alpha(a, src):
+        """Alpha must be the uint8 plane the loader's /255 decode assumes.
+
+        A float32 [0,1] plane would pass every existence check and then be divided by
+        255 again, silently feeding the model a near-zero channel.
+        """
+        if a.dtype != np.uint8:
+            raise AlphaUnavailable(f"alpha from {src} has dtype {a.dtype}, expected uint8")
+        if a.ndim != 3 or a.shape[2] != 1:
+            raise AlphaUnavailable(f"alpha from {src} has shape {a.shape}, expected (H, W, 1)")
+        return a
+
+    def _load_alpha(self, npz_file, npz_data):
+        """Resolve alpha for one sample: in-npz key first, alpha.npy sidecar second.
+
+        `npz_data` may be an already-open NpzFile (hot path) or None (probe path).
+        Never returns a default -- a run configured for alpha must fail without it.
+        """
+        if npz_data is not None:
+            if "alpha" in npz_data.files:
+                return self._validate_alpha(npz_data["alpha"].copy(), npz_file)
+        else:
+            with np.load(npz_file) as z:
+                if "alpha" in z.files:
+                    return self._validate_alpha(z["alpha"], npz_file)
+        sidecar = os.path.join(os.path.dirname(npz_file), "alpha.npy")
+        if not os.path.exists(sidecar):
+            raise AlphaUnavailable(
+                f"use_alpha=true but {npz_file} has no 'alpha' key and {sidecar} does not exist"
+            )
+        try:
+            a = np.load(sidecar)
+        except Exception as e:
+            raise AlphaUnavailable(f"failed to read {sidecar}: {e}") from e
+        return self._validate_alpha(a, sidecar)
+
     def _apply_indices(self, samples, indices):
         """Apply indices to samples - supports tuple, list, or JSON file path"""
         if isinstance(indices, tuple):
@@ -163,6 +226,10 @@ class LightGenDataset(Dataset):
     def __getitem__(self, index):
         try:
             return self.try_get_item(index)
+        except AlphaUnavailable:
+            # Never swallowed. Dropping these would silently shrink every affected batch
+            # for the rest of the run, with no error and no metric that would show it.
+            raise
         except Exception as e:
             print(f"Failed to load {index}: {e}")
             import traceback
@@ -201,6 +268,7 @@ class LightGenDataset(Dataset):
         metal_np = npz_data['metal'].copy()
         rough_np = npz_data['rough'].copy()
         emission_color_np = npz_data['emission_color'].copy()
+        alpha_np = self._load_alpha(npz_file, npz_data) if self.cfg.use_alpha else None
         npz_data.close()  # Explicitly close to free file handles
         
         # Load CLIP conditioning: either precomputed embedding or raw thumbnail
@@ -229,9 +297,10 @@ class LightGenDataset(Dataset):
         metal = torch.from_numpy(decode_uint8_to_float(metal_np)).float()  # [512, 512, 1]
         rough = torch.from_numpy(decode_uint8_to_float(rough_np)).float()  # [512, 512, 1]
         emission_color = torch.from_numpy(decode_uint8_to_float(emission_color_np)).float()  # [512, 512, 3]
-        
+        alpha = torch.from_numpy(decode_uint8_to_float(alpha_np)).float() if alpha_np is not None else None  # [512, 512, 1]
+
         # Clean up numpy arrays to free memory
-        del occupancy_np, position_np, objnormal_np, color_np, metal_np, rough_np, emission_color_np
+        del occupancy_np, position_np, objnormal_np, color_np, metal_np, rough_np, emission_color_np, alpha_np
         
         # Rearrange from [H, W, C] to [C, H, W]
         occupancy = occupancy.permute(2, 0, 1)  # [1, 512, 512]
@@ -241,7 +310,9 @@ class LightGenDataset(Dataset):
         metal = metal.permute(2, 0, 1)  # [1, 512, 512]
         rough = rough.permute(2, 0, 1)  # [1, 512, 512]
         emission_color = emission_color.permute(2, 0, 1)  # [3, 512, 512]
-        
+        if alpha is not None:
+            alpha = alpha.permute(2, 0, 1)  # [1, 512, 512]
+
         # GT emission mask: binary mask where any emission channel > threshold (in [0,1] space)
         # Multiply by occupancy so regions outside UV islands are always 0
         gt_emission_mask = ((emission_color.max(dim=0, keepdim=True)[0] > 0.001) * occupancy).float()  # [1, 512, 512]
@@ -266,6 +337,10 @@ class LightGenDataset(Dataset):
             color = F.interpolate(color.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             metal = F.interpolate(metal.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             rough = F.interpolate(rough.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
+            if alpha is not None:
+                # bilinear like metal/rough, NOT nearest: baked alpha is continuous
+                # (baseColorFactor[3] x baseColorTexture.A), not a binary mask.
+                alpha = F.interpolate(alpha.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             emission_color = F.interpolate(emission_color.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             gt_emission_mask = F.interpolate(gt_emission_mask.unsqueeze(0), size=(target_h, target_w), mode='nearest').squeeze(0)
             input_tensor = F.interpolate(input_tensor.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
@@ -344,6 +419,8 @@ class LightGenDataset(Dataset):
             "albedo_map": color,  # [3, H, W]
             "metal_map": metal,  # [1, H, W]
             "rough_map": rough,  # [1, H, W]
+            # Present only when use_alpha is set, so 12ch batches keep their exact shape.
+            **({"alpha_map": alpha} if alpha is not None else {}),
             "mask_map": occupancy,  # [1, H, W]
             "gt_emission": emission_color,  # [3, H, W], normalized to [-1, 1]
             "gt_emission_mask": gt_emission_mask,  # [1, H, W], binary mask where emission > 0

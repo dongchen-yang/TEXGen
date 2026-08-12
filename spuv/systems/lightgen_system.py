@@ -73,6 +73,7 @@ class LightGenSystem(TEXGenDiffusion):
         albedo_map = batch['albedo_map']  # [B, 3, H, W]
         metal_map = batch['metal_map']  # [B, 1, H, W]
         rough_map = batch['rough_map']  # [B, 1, H, W]
+        alpha_map = batch.get('alpha_map', None)  # [B, 1, H, W] or None (no-alpha variants)
         position_map = batch['position_map']  # [B, 3, H, W]
         normal_map = batch['normal_map']  # [B, 3, H, W]
         
@@ -120,6 +121,7 @@ class LightGenSystem(TEXGenDiffusion):
             'albedo_map': albedo_map,
             'metal_map': metal_map,
             'rough_map': rough_map,
+            'alpha_map': alpha_map,
             'normal_map': normal_map,
             'gt_emission_mask': gt_emission_mask,
         }
@@ -154,10 +156,17 @@ class LightGenSystem(TEXGenDiffusion):
         normal_map = condition.get("normal_map")  # [B, 3, H, W]
         metal_map = condition.get("metal_map")    # [B, 1, H, W]
         rough_map = condition.get("rough_map")    # [B, 1, H, W]
-        
-        # Prepare baked_texture: include all material properties (albedo + metallic + roughness)
-        # This gives us full PBR material representation
-        baked_texture = torch.cat([albedo_map, metal_map, rough_map], dim=1)  # [B, 5, H, W]
+        alpha_map = condition.get("alpha_map", None)  # [B, 1, H, W] or None
+
+        # Prepare baked_texture: include all material properties (albedo + metallic + roughness
+        # [+ alpha]). Alpha belongs HERE rather than as a later concat element: this is the only
+        # placement that puts it before the occupancy mask in the backbone's input order, gives it
+        # the same [0,1]->[-1,1] remap as the other material channels, and keeps base_channels
+        # equal to in_channels so the gt_emission_mask oracle branch stays off.
+        if alpha_map is not None:
+            baked_texture = torch.cat([albedo_map, metal_map, rough_map, alpha_map], dim=1)  # [B, 6, H, W]
+        else:
+            baked_texture = torch.cat([albedo_map, metal_map, rough_map], dim=1)  # [B, 5, H, W]
         baked_weights = mask_map     # [B, 1, H, W]
         
         # GT emission mask condition (if available)

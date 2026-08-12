@@ -51,7 +51,7 @@ class LightGenPointUVNet(PointUVNet):
             timestep: [B] - diffusion timestep
             clip_embeddings: [text_emb, image_emb] - CLIP embeddings (can be None)
             mesh: mesh data (not used in LightGen)
-            image_info: dict with 'baked_texture' [B, 5, H, W] (albedo+metal+rough) 
+            image_info: dict with 'baked_texture' [B, 5 or 6, H, W] (albedo+metal+rough[+alpha])
                         and 'baked_weights' [B, 1, H, W] (occupancy mask)
             data_normalization: bool - whether data is normalized to [-1, 1]
             condition_drop: [B] - dropout mask for classifier-free guidance
@@ -115,15 +115,20 @@ class LightGenPointUVNet(PointUVNet):
         # Build input list: [noisy_emission, position, material, mask, (optional) gt_emission_mask]
         # x_dense: [B, 3, H, W] - noisy emission
         # position_map: [B, 3, H, W] - 3D positions
-        # baked_texture: [B, 5, H, W] - albedo(3) + metallic(1) + roughness(1)
+        # baked_texture: [B, 5 or 6, H, W] - albedo(3) + metallic(1) + roughness(1) [+ alpha(1)]
         # baked_weights: [B, 1, H, W] - occupancy mask
         # gt_emission_mask: [B, 1, H, W] - binary GT emission mask (optional, requires in_channels=13)
         concat_list = [x_dense, position_map, baked_texture, baked_weights]
-        base_channels = sum(t.shape[1] for t in concat_list)
         gt_emission_mask = image_info.get('gt_emission_mask', None)
-        if gt_emission_mask is not None and self.cfg.in_channels > base_channels:
+        if self.cfg.use_gt_emission_mask_cond:
+            assert gt_emission_mask is not None, \
+                "use_gt_emission_mask_cond=true but the batch carries no gt_emission_mask"
             concat_list.append(gt_emission_mask)
         x_concat = torch.cat(concat_list, dim=1)
+        assert x_concat.shape[1] == self.cfg.in_channels, (
+            f"assembled input is {x_concat.shape[1]}ch but cfg.in_channels={self.cfg.in_channels}; "
+            f"parts={[t.shape[1] for t in concat_list]}"
+        )
         x_dense = self.input_conv(x_concat) * mask_map
         
         if torch.isnan(x_dense).any():

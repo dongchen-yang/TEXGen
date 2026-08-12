@@ -72,6 +72,11 @@ class PointUVNet(BaseModule):
         window_size: Tuple[int] = (32, 32, 32, 32)
         skip_input: bool = True
         skip_type: str = "baked_texture"
+        # Concatenate the GT emission mask as an extra input channel (the oracle-conditioning
+        # variant). Must be requested explicitly: it hands the model a mask of the very
+        # emission it is trained to predict, so it can never be enabled as a side effect of
+        # a channel-count arithmetic.
+        use_gt_emission_mask_cond: bool = False
         num_heads: Tuple[int] = (4, 4, 4, 4)
         point_block_num: Tuple[int] = (2, 2, 2, 2)
         use_uv_head: bool = True

@@ -69,6 +69,7 @@ system:
   backbone:
     # --- VARIANT: +1 channel for GT emission mask ---
     in_channels: 13
+    use_gt_emission_mask_cond: true
     out_channels: 3
 
     num_layers: [1, 1, 1, 1, 1]
