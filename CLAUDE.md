@@ -246,6 +246,32 @@ setting, **do not pick a checkpoint by "best val/psnr"** — that metric rewards
 predicting nothing. Select on the point-sampled surface IoU used in
 `docs/status/evaluation-results.md`, or take the final checkpoint.
 
+#### Measured proof that val/psnr rewards darkness (2026-08-13, `texgen_alpha_74k_v2`)
+
+Two checkpoints of the same run, inference over **all 387 validation shapes**, scored
+with the training loop's own formula:
+
+| checkpoint | val/psnr ↑ | pooled MSE ↓ | mean emission | share of GT | lit texels |
+|---|---|---|---|---|---|
+| epoch 4 | **17.706** | 0.01696 | 0.0274 | **55%** | 13.6% |
+| epoch 24 | 16.911 | 0.02037 | 0.0398 | **79%** | 13.8% |
+| ground truth | — | — | 0.0502 | 100% | 17.0% |
+
+The earlier checkpoint scores **0.80 dB better while painting 31% less light**, and only
+55% of the ground truth's. The later one gets substantially closer to the true amount of
+emission and is penalised for it. That is the whole mechanism behind the falling curve —
+on this run `val/psnr` peaks at **epoch 5 (19.10 dB)** and sinks to 17.40 by epoch 23.
+
+Reproduce with `evaluation/newdata_eval/build_ckpt_uv_comparison.py`, which also renders
+the UV maps side by side. **Two traps it exists to avoid:**
+
+1. `val/psnr` pools squared error over *every pixel* of *every shape* (the zeroed region
+   outside occupancy counts in the denominator) and takes **one** `-10log10` of that pooled
+   MSE. Computing per-shape PSNRs and averaging them in dB space instead gives ~25 dB where
+   training logs ~18 dB on the same predictions, and can rank checkpoints differently.
+2. A small sample will not reproduce the effect. A 14-shape random draw ranked the two
+   checkpoints backwards, because one very bright shape dominates the pooled MSE.
+
 ### Overfit vs Full Training Config Differences
 | Setting | Overfit | Full |
 |---------|---------|------|
