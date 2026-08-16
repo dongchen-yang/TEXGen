@@ -311,6 +311,38 @@ Full training checkpoints go to `/scratch/dya78/lightgen/TEXGen/output_emission_
 - **Conda env**: `texgen`
 - **Critical env var**: `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (prevents OOM from fragmentation)
 
+### ⚠️ `shuffle_orders=True` consumes the CPU RNG at INFERENCE, hundreds of times per shape
+
+`texgen_network.py:621,766` sets `self.shuffle_orders = True` **unconditionally** — not from
+config, and **not gated on `self.training`** (the only `self.training` guard in that file is
+attention dropout). It reaches `ptv3_model_texgen.py:129,703`:
+
+```python
+if shuffle_orders:
+    perm = torch.randperm(code.shape[0])      # CPU global RNG -- no device= kwarg
+```
+
+The permutation selects each block's space-filling-curve serialization
+(`order_index = i % len(self.order)`, `texgen_network.py:752`), so it **changes the attention
+windows and therefore the output**. The U-Net builds a `down{scale}` for every scale
+(`texgen_network.py:83-95`) **and** an `up{scale}` for all but the last
+(`:101-133`), so `block_type = ["uv","point_uv","uv_dit","uv_dit","uv_dit"]` gives 5
+`UVPTVAttnStage`s per forward; at 2 CFG forwards × 50 steps that is ~500 draws per shape.
+
+**Consequences for anyone seeding inference:**
+
+1. Use a **global `torch.manual_seed`**, which seeds CPU *and* all CUDA devices. A
+   `torch.Generator(device="cuda")` leaves every one of those `randperm` calls unseeded and
+   seed 0 will not reproduce itself. `inference_specific_samples.py` does this per shape.
+2. Seed **before** `test_pipeline`, not inside it: `prepare_diffusion_data` draws and discards
+   two CUDA tensors first (`lightgen_system.py:247,255`), and discarded draws still advance
+   the stream.
+3. Even correctly seeded, this lane is **not bit-identical** — nothing sets
+   `torch.use_deterministic_algorithms`, and torchsparse/PTv3 reduction order varies. Measured
+   2026-08-16 on 3 shapes: the same seed re-run differs by at most **1/255 on ≤0.003% of
+   pixels** (the 8-bit quantisation floor; one shape was exactly identical), while seed 0 vs
+   seed 1 differs by **118–255 on 0.04–15%** of pixels. Promise "same noise", not "same bytes".
+
 ## Appendix: historical experiment log (2026-03/04)
 
 ### Overfit Test — 3 Baseline Variants (2026-03-23)
