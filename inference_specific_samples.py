@@ -9,6 +9,7 @@ This script matches the validation process from training:
 - Respects data_normalization setting from config
 """
 
+import hashlib
 import os
 import sys
 import torch
@@ -21,6 +22,16 @@ import pandas as pd
 # Add TEXGen to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+def sample_seed(sha: str, seed: int) -> int:
+    """Per-shape RNG seed for `(sha, seed)`. Order-, batch- and skip-independent.
+
+    VERBATIM COPY of evaluation/newdata_eval/seedutil.py in the parent lightgen repo, duplicated
+    because this repo is cloned standalone on cs-venus-05. Keep the copies byte-identical.
+    """
+    return int.from_bytes(hashlib.sha256(f"{sha}:{seed}".encode()).digest()[:8], "big")
+
+
 def find_sample_index(sample_id, parquet_file):
     """Find the positional index of a sample ID in the parquet file."""
     df = pd.read_parquet(parquet_file)
@@ -32,7 +43,8 @@ def find_sample_index(sample_id, parquet_file):
     else:
         return None
 
-def inference_samples(checkpoint_path, sample_ids, output_dir, data_root=None, parquet_file=None):
+def inference_samples(checkpoint_path, sample_ids, output_dir, data_root=None,
+                      parquet_file=None, seed=0):
     """Run inference on specific samples and save results.
 
     data_root/parquet_file override the hardcoded full-dataset paths (used by the newdata_eval
@@ -171,7 +183,22 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root=None, p
                 batch[key] = [value]
             else:
                 batch[key] = [value]
-        
+
+        # GLOBAL seed, and it must land HERE -- before test_pipeline, not inside it.
+        # Three RNG consumers sit downstream and two of them are easy to miss:
+        #   * prepare_diffusion_data draws and DISCARDS two CUDA tensors
+        #     (lightgen_system.py:247,255) -- discarded, but they advance the stream;
+        #   * the initial noise, one CUDA draw (texgen_test.py:506);
+        #   * hundreds of CPU torch.randperm calls per shape from shuffle_orders=True
+        #     (texgen_network.py:621,766 -> ptv3_model_texgen.py:129,703). That flag is
+        #     hardcoded and NOT gated on self.training -- the only self.training guard in
+        #     either file is attention dropout -- and the permutation CHANGES THE OUTPUT by
+        #     reordering the space-filling-curve serialization the attention windows use.
+        # torch.manual_seed seeds CPU *and* all CUDA devices; a torch.Generator(device="cuda")
+        # would leave every one of those randperm calls unseeded and seed 0 would not
+        # reproduce itself. Do not "clean this up" into a Generator.
+        torch.manual_seed(sample_seed(sample_id, seed))
+
         # Run inference - matching validation process exactly
         with torch.no_grad():
             # Disable autocast (matching validation)
