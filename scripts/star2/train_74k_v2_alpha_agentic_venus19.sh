@@ -71,6 +71,13 @@ CPUS=${CPUS:-32}
 # If this OOMs, raise to 400G rather than cutting num_workers (that changes throughput).
 MEM=${MEM:-256G}
 WALL=${WALL:-7-00:00:00}
+# Queue the run BEFORE the node is free so it holds its place and starts the moment the
+# GPUs open up, while making it impossible for it to start before staging has succeeded.
+#   DEPENDENCY=afterok:<stageA>:<stageB> bash scripts/star2/train_74k_v2_alpha_agentic_venus19.sh
+# A pending job's dependency can be widened later with
+#   scontrol update jobid=<id> Dependency=afterok:<a>:<b>
+# without losing the accrued queue age.
+DEPENDENCY=${DEPENDENCY:-}
 # Verified per-node: Task 9's staging step records `ls -d /usr/local/cuda-*` on venus-19.
 # Overridable so a node with a different toolkit needs no edit to this file.
 CUDA_VER=${CUDA_VER:-12.9}
@@ -81,8 +88,12 @@ echo "Submitting ${NAME}"
 echo "  node   : ${NODE}  (${NGPU} x ${GRES}, ${CPUS} cpu, ${MEM})"
 echo "  config : ${CONFIG}"
 echo "  extra  : '${EXTRA}'"
+echo "  depend : '${DEPENDENCY:-<none>}'"
 
-ssh star2 "sbatch" << EOF
+SBATCH_OPTS=""
+[ -n "${DEPENDENCY}" ] && SBATCH_OPTS="--dependency=${DEPENDENCY}"
+
+ssh star2 "sbatch ${SBATCH_OPTS}" << EOF
 #!/bin/bash
 #SBATCH -J ${NAME}
 #SBATCH --partition=3dlg-hcvc-lab-long
