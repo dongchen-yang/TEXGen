@@ -64,8 +64,11 @@ WALLTIME=${WALLTIME:-24:00:00}
 ACCOUNT=${ACCOUNT:-rrg-msavva_gpu}
 
 SPLIT=data_splits_emissive_74k_stratified_newbake_vae_agentic.json
+SHAS=agentic_train_shas.txt
 PARQUET_MD5=c4196a9dba89e354f47c415ea0167e2c
 SPLIT_MD5=159492b2b8d104ab63f3d13eeea394d0
+SHAS_MD5=191a91bc295192517565eaac6089753b
+SUCCESS_ROWS=824858          # rows of the parquet with success==True (measured, pandas 2.3.3)
 EXPECT=72421
 OUTPUT_DIR=${RUNS}/output_emissive_74k_alpha_v2_agentic_fir${OUT_SUFFIX}
 
@@ -181,6 +184,7 @@ check_md5() {
 }
 check_md5 ${PARQUET_MD5} ${DATA}/df_SomgProc_final.parquet
 check_md5 ${SPLIT_MD5}   ${DATA}/${SPLIT}
+check_md5 ${SHAS_MD5}    ${DATA}/${SHAS}
 
 for t in ${DATA}/texgen_tars_v2/texgen_root_chunk_0{0,1,2,3,4,5,6,7}.tar \\
          ${DATA}/texgen_tars_v2/thumbnails_emissive.tar \\
@@ -201,7 +205,7 @@ if [ "\$AVAIL_KB" -lt 471859200 ]; then      # 450 GB
     exit 2
 fi
 
-cp ${DATA}/df_SomgProc_final.parquet ${DATA}/${SPLIT} "\$D/"
+cp ${DATA}/df_SomgProc_final.parquet ${DATA}/${SPLIT} ${DATA}/${SHAS} "\$D/"
 
 echo "[stage] extracting 8 chunk tars in parallel  \$(date -Iseconds)"
 printf '%s\n' ${DATA}/texgen_tars_v2/texgen_root_chunk_0{0,1,2,3,4,5,6,7}.tar \\
@@ -241,6 +245,49 @@ for p in random.sample(ps, min(200, len(ps))):
         sys.exit("BAD ALPHA SIDECAR %s: shape=%s dtype=%s" % (side, a.shape, a.dtype))
 print("[alpha] ok - 200 random sidecars are uint8 (H, W, 1)")
 ALPHACHK
+
+# ---- the split -> parquet POSITIONAL MAPPING gate --------------------------------------
+# The split file stores POSITIONAL indices into the parquet filtered to success==True, and
+# the loader resolves them as samples[i] over df.iterrows() in row order. So the identity of
+# the 36,255 training shapes depends on pandas' read_parquet + boolean-filter row ORDER, not
+# just on the two md5s above. fir runs pandas 3.0.x where the venus arms ran a 2.2/2.3-era
+# pandas, and ANY drift there would train this run on different shapes with no error and no
+# visible symptom. So reproduce the mapping and require it to equal agentic_train_shas.txt,
+# which was derived independently from the same two files (verified byte-exact on the
+# workstation under pandas 2.3.3: 824,858 success rows, order-exact match).
+export SPLIT_NAME=${SPLIT}
+export SHAS_NAME=${SHAS}
+export WANT_SUCCESS_ROWS=${SUCCESS_ROWS}
+python - <<'SPLITCHK' || { echo "FATAL split/parquet positional mapping"; exit 2; }
+import json, os, sys
+import pandas as pd
+d = os.path.join(os.environ["SLURM_TMPDIR"], "lightgen", "data")
+df = pd.read_parquet(os.path.join(d, "df_SomgProc_final.parquet"))
+if "success" in df.columns:
+    df = df[df["success"] == True]
+n = len(df)
+want_n = int(os.environ["WANT_SUCCESS_ROWS"])
+if n != want_n:
+    sys.exit("success==True rows = %d, expected %d (pandas %s changed read/filter semantics)"
+             % (n, want_n, pd.__version__))
+ids = [str(x) for x in df.index]
+sp = json.load(open(os.path.join(d, os.environ["SPLIT_NAME"])))
+tr = sp["train"]["indices"]; va = sp["val"]["indices"]; te = sp["test"]["indices"]
+if (len(tr), len(va), len(te)) != (36255, 387, 388):
+    sys.exit("split counts (%d, %d, %d), expected (36255, 387, 388)" % (len(tr), len(va), len(te)))
+hi = max(max(tr), max(va), max(te))
+if hi >= n:
+    sys.exit("split index %d is out of range for %d rows" % (hi, n))
+got = [ids[i] for i in tr]
+want = [l.strip() for l in open(os.path.join(d, os.environ["SHAS_NAME"])) if l.strip()]
+if got != want:
+    same_set = sorted(got) == sorted(want)
+    sys.exit("TRAIN SHAS DIFFER from %s (same set: %s) under pandas %s -- the positional "
+             "indices no longer select the intended shapes"
+             % (os.environ["SHAS_NAME"], same_set, pd.__version__))
+print("[split] ok - pandas %s: %d success rows; the 36,255 train indices reproduce %s exactly"
+      % (pd.__version__, n, os.environ["SHAS_NAME"]))
+SPLITCHK
 
 mkdir -p ${OUTPUT_DIR} ${RUNS}
 echo "[inodes] /scratch usage before training:"; diskusage_report 2>/dev/null | grep scratch || true
