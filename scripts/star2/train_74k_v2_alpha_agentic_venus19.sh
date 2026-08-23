@@ -178,11 +178,18 @@ mkdir -p \$TMPDIR ${PROJECT}/log \$HF_HOME
 # requeues) because a node can be re-staged between attempts.
 mark "checking env"
 python - <<'ENVCHK' || { mark "FATAL bad env"; exit 4; }
+# Deliberately NOT \`assert\`: an inherited PYTHONOPTIMIZE strips asserts, and this gate
+# would then pass silently on the wrong interpreter -- the exact failure it exists to
+# catch. sys.exit() cannot be optimised away.
 import sys
-assert "envs/texgen-bw" in sys.executable, f"WRONG INTERPRETER: {sys.executable}"
+if "envs/texgen-bw" not in sys.executable:
+    sys.exit(f"WRONG INTERPRETER: {sys.executable} (want .../envs/texgen-bw/bin/python)")
 import torch, spconv.pytorch, torchsparse, nvdiffrast.torch, pytorch_lightning
+if not torch.cuda.is_available():
+    sys.exit("torch.cuda.is_available() is False -- no usable GPU in this allocation")
 print(f"[env] {sys.executable}")
-print(f"[env] torch {torch.__version__}  cuda={torch.cuda.is_available()}  lightning {pytorch_lightning.__version__}")
+print(f"[env] torch {torch.__version__}  cuda {torch.version.cuda}  gpus {torch.cuda.device_count()}"
+      f"  lightning {pytorch_lightning.__version__}")
 ENVCHK
 
 mark "checking data"
