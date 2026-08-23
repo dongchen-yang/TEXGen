@@ -17,7 +17,20 @@
 #     (~7.2 TB node-local, no quota). TMPDIR is WIPED at job end -> checkpoints go to
 #     /scratch, and a requeue re-extracts (~15 min, paid once per segment);
 #   * 24 h segments with --requeue + auto_resume, the fir house style;
-#   * a sick-node GPU guard (an orphaned PID held 69 GB on fc10218 on 2026-08-20).
+#   * a sick-node GPU guard (an orphaned PID held 69 GB on fc10218 on 2026-08-20);
+#   * a PIN OVERLAY on PYTHONPATH. bootstrap_texgen_bw.sh deliberately HARD-PINS four
+#     packages on venus -- transformers==4.28.1, diffusers==0.28.0,
+#     huggingface_hub==0.25.2, omegaconf==2.3.0 -- because the CLIP/diffusers
+#     conditioning stack is version-sensitive. fir's shared venv carries transformers
+#     4.57.3 / diffusers 0.32.2 / hub 0.36.0, i.e. 29 minor versions of drift on the
+#     encoder this model conditions on. Rather than mutate a SHARED (and already
+#     dist-info-corrupted) venv, the pins are installed into an isolated --target dir
+#     and shadowed in via PYTHONPATH, which sys.path puts ahead of site-packages.
+#     Verified on fir: the three versions resolve and the CLIP image encoder loads
+#     offline from fir's own HF cache. omegaconf already matches at 2.3.0.
+#     Build/rebuild with:
+#       pip install --target /scratch/dya78/lightgen/texgen_pin_overlay --no-deps \
+#         transformers==4.28.1 diffusers==0.28.0 huggingface_hub==0.25.2 tokenizers==0.13.3
 #
 # WHAT IS DELIBERATELY UNCHANGED FROM THE VENUS LAUNCHER, because each encodes a failure:
 #   * TEXGEN_ENABLE_FLASH=0 -- LOAD-BEARING AND DIFFERENT IN KIND HERE. On the venus nodes
@@ -52,6 +65,7 @@ CONFIG=${CONFIG:-configs/lightgen_pointuv_256_batch32_emissive_74k_v2_alpha_fir_
 REPO=${REPO:-/scratch/dya78/lightgen/TEXGen_agentic}
 DATA=${DATA:-/scratch/dya78/lightgen/data}
 RUNS=${RUNS:-/scratch/dya78/lightgen/texgen_runs}
+OVERLAY=${OVERLAY:-/scratch/dya78/lightgen/texgen_pin_overlay}
 BRANCH=texgen-74k-v2-venus05
 OUT_SUFFIX=${OUT_SUFFIX:-}
 EXTRA=${EXTRA:-}
@@ -158,15 +172,34 @@ export WANDB_MODE=offline
 export TMPDIR=\${SLURM_TMPDIR}/tmp
 mkdir -p "\$TMPDIR"
 
+# Shadow the shared venv's newer conditioning stack with venus's hard pins. PYTHONPATH
+# precedes site-packages in sys.path, so these win without touching the shared venv.
+[ -d "${OVERLAY}/transformers" ] || { echo "FATAL: pin overlay missing at ${OVERLAY} (see the header for the pip line)"; exit 4; }
+export PYTHONPATH=${OVERLAY}\${PYTHONPATH:+:\$PYTHONPATH}
+
 python - <<'ENVCHK' || { echo "FATAL bad env"; exit 4; }
 import sys, os
 if "/scratch/dya78/lightgen/env" not in sys.executable:
     sys.exit("WRONG INTERPRETER: %s" % sys.executable)
 if os.environ.get("TEXGEN_ENABLE_FLASH") != "0":
     sys.exit("TEXGEN_ENABLE_FLASH must be 0 on fir: flash_attn imports here but not on the venus arms")
+import transformers, diffusers, huggingface_hub, omegaconf
+# The four packages bootstrap_texgen_bw.sh hard-pins on venus. Anything else in this env
+# is allowed to differ (this is an acknowledged cross-site run), but the conditioning
+# stack the model actually consumes must match, or the comparison loses its meaning.
+for name, mod, want in (("transformers", transformers, "4.28.1"),
+                        ("diffusers", diffusers, "0.28.0"),
+                        ("huggingface_hub", huggingface_hub, "0.25.2"),
+                        ("omegaconf", omegaconf, "2.3.0")):
+    got = mod.__version__.split("+")[0]
+    if got != want:
+        sys.exit("%s is %s but venus pins %s -- pin overlay not shadowing (PYTHONPATH=%s)"
+                 % (name, got, want, os.environ.get("PYTHONPATH", "<unset>")))
 import torch, spconv.pytorch, torchsparse, nvdiffrast.torch, pytorch_lightning
 if not torch.cuda.is_available():
     sys.exit("torch.cuda.is_available() is False -- no usable GPU in this allocation")
+print("[env] pins ok: transformers %s / diffusers %s / hub %s / omegaconf %s"
+      % (transformers.__version__, diffusers.__version__, huggingface_hub.__version__, omegaconf.__version__))
 print("[env] %s" % sys.executable)
 print("[env] torch %s  cuda %s  gpus %d  lightning %s"
       % (torch.__version__, torch.version.cuda, torch.cuda.device_count(), pytorch_lightning.__version__))
