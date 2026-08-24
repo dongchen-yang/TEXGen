@@ -81,6 +81,7 @@ CPUS=${CPUS:-48}
 MEM=${MEM:-1024G}
 WALLTIME=${WALLTIME:-24:00:00}
 ACCOUNT=${ACCOUNT:-rrg-msavva_gpu}
+MAIL_USER=${MAIL_USER:-yangdongchen1@gmail.com}
 # fir's H100 pool is usually congested and these are BYNODE partitions, so a 4-GPU request
 # waits for a whole free node. Queue the real run behind the probe so it accrues queue age
 # while the probe runs, instead of starting that wait from scratch afterwards:
@@ -122,7 +123,7 @@ fi
 
 "${SUBMIT[@]}" << EOF
 #!/bin/bash
-#SBATCH --mail-user=yangdongchen1@gmail.com
+#SBATCH --mail-user=${MAIL_USER}
 #SBATCH --mail-type=END
 #SBATCH -J ${NAME}${OUT_SUFFIX}_${TAG}
 #SBATCH --gpus-per-node=h100:${NUM_GPUS}
@@ -355,8 +356,12 @@ echo "[inodes] /scratch usage before training:"; diskusage_report 2>/dev/null | 
 # No \`| tee\`: --output already persists everything, and piping would make TRAIN_PID the
 # tee process, so \`wait\` would report TEE's status and a crashed trainer would read as
 # success. Backgrounded bare so the SIGTERM trap can reach it.
+# exp_root_dir MUST be overridden too, not just checkpoint.dirpath: launch.py builds
+# trial_dir = exp_root_dir/<name>/<trial> and writes logs, configs/, progress/, tb_logs/,
+# save/, cmd.txt AND the offline wandb directory there. RUNS alone does not move it, so a
+# submitter who cannot write the config's baked-in path fails at startup.
 python launch.py --config ${CONFIG} --gpu \$(seq -s, 0 \$(( ${NUM_GPUS} - 1 ))) --train --wandb \\
-    checkpoint.dirpath=${OUTPUT_DIR}/ ${EXTRA} &
+    exp_root_dir=${RUNS} checkpoint.dirpath=${OUTPUT_DIR}/ ${EXTRA} &
 TRAIN_PID=\$!
 wait "\$TRAIN_PID"
 EXIT_CODE=\$?
