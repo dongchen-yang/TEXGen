@@ -66,6 +66,11 @@ REPO=${REPO:-/scratch/dya78/lightgen/TEXGen_agentic}
 DATA=${DATA:-/scratch/dya78/lightgen/data}
 RUNS=${RUNS:-/scratch/dya78/lightgen/texgen_runs}
 OVERLAY=${OVERLAY:-/scratch/dya78/lightgen/texgen_pin_overlay}
+VENV=${VENV:-/scratch/dya78/lightgen/env}
+# Leave empty to inherit ~/.cache/huggingface (correct for dya78, whose home holds the CLIP
+# snapshots). A DIFFERENT submitting user has a different home and almost certainly no cache,
+# so point this at the group-readable copy: HF_CACHE=/scratch/dya78/lightgen/hf_cache
+HF_CACHE=${HF_CACHE:-}
 BRANCH=texgen-74k-v2-venus05
 OUT_SUFFIX=${OUT_SUFFIX:-}
 EXTRA=${EXTRA:-}
@@ -166,9 +171,10 @@ cd ${REPO}
 git fetch origin ${BRANCH} && git checkout ${BRANCH} && git pull --ff-only origin ${BRANCH}
 echo "TEXGen HEAD: \$(git log --oneline -1)"
 
-VENV=/scratch/dya78/lightgen/env
+VENV=${VENV}
 [ -f "\${VENV}/bin/activate" ] || { echo "FATAL: no venv at \${VENV}"; exit 4; }
 source "\${VENV}/bin/activate"
+export EXPECT_VENV=${VENV}
 
 # ---- environment gates -------------------------------------------------------------
 # fir has no conda, so the venus launcher's 'envs/texgen-bw' interpreter assertion is
@@ -181,6 +187,14 @@ export TRANSFORMERS_OFFLINE=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export WANDB_MODE=offline
+# A cache MISS on the gated CLIP repos is a 401, not a download (that crashed job 237299).
+if [ -n "${HF_CACHE}" ]; then
+    [ -d "${HF_CACHE}/hub" ] || { echo "FATAL: HF_CACHE=${HF_CACHE} has no hub/ subdir"; exit 4; }
+    export HF_HOME=${HF_CACHE}
+    echo "[hf] HF_HOME=\$HF_HOME (explicit; not this user's home cache)"
+else
+    echo "[hf] HF_HOME unset -> \$HOME/.cache/huggingface"
+fi
 export TMPDIR=\${SLURM_TMPDIR}/tmp
 mkdir -p "\$TMPDIR"
 
@@ -191,8 +205,9 @@ export PYTHONPATH=${OVERLAY}\${PYTHONPATH:+:\$PYTHONPATH}
 
 python - <<'ENVCHK' || { echo "FATAL bad env"; exit 4; }
 import sys, os
-if "/scratch/dya78/lightgen/env" not in sys.executable:
-    sys.exit("WRONG INTERPRETER: %s" % sys.executable)
+want_venv = os.environ["EXPECT_VENV"]
+if not sys.executable.startswith(want_venv):
+    sys.exit("WRONG INTERPRETER: %s (want it under %s)" % (sys.executable, want_venv))
 if os.environ.get("TEXGEN_ENABLE_FLASH") != "0":
     sys.exit("TEXGEN_ENABLE_FLASH must be 0 on fir: flash_attn imports here but not on the venus arms")
 import transformers, diffusers, huggingface_hub, omegaconf
