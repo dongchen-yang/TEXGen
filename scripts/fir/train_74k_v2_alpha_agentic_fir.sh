@@ -76,6 +76,11 @@ CPUS=${CPUS:-48}
 MEM=${MEM:-1024G}
 WALLTIME=${WALLTIME:-24:00:00}
 ACCOUNT=${ACCOUNT:-rrg-msavva_gpu}
+# fir's H100 pool is usually congested and these are BYNODE partitions, so a 4-GPU request
+# waits for a whole free node. Queue the real run behind the probe so it accrues queue age
+# while the probe runs, instead of starting that wait from scratch afterwards:
+#   DEPENDENCY=afterok:<probe_jobid> bash scripts/fir/train_74k_v2_alpha_agentic_fir.sh
+DEPENDENCY=${DEPENDENCY:-}
 
 SPLIT=data_splits_emissive_74k_stratified_newbake_vae_agentic.json
 SHAS=agentic_train_shas.txt
@@ -100,8 +105,15 @@ echo "  config   : ${CONFIG}"
 echo "  outdir   : ${OUTPUT_DIR}"
 echo "  walltime : ${WALLTIME}   account: ${ACCOUNT}"
 echo "  extra    : '${EXTRA}'"
+echo "  depend   : '${DEPENDENCY:-<none>}'"
 
-if command -v sbatch >/dev/null 2>&1; then SUBMIT=(sbatch); else SUBMIT=(ssh -o BatchMode=yes fir sbatch); fi
+DEP_ARG=()
+[ -n "${DEPENDENCY}" ] && DEP_ARG=(--dependency="${DEPENDENCY}")
+if command -v sbatch >/dev/null 2>&1; then
+    SUBMIT=(sbatch "${DEP_ARG[@]}")
+else
+    SUBMIT=(ssh -o BatchMode=yes fir sbatch "${DEP_ARG[@]}")
+fi
 
 "${SUBMIT[@]}" << EOF
 #!/bin/bash
