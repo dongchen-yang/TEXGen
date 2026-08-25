@@ -169,11 +169,24 @@ export HF_HOME=${PROJECT}/.cache/huggingface
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-# flash-attn is not available on sm_120 (two source builds, ~45 min and ~65 min,
-# both left it unimportable — jobs 236972/237121, confirmed by 237198). This selects
-# the dense attention path instead. It is a recorded DEVIATION from the reference run:
-# numerics differ in the safe direction (no .half() cast) and windowing uses
-# min(patch_size_max, n_points) rather than a fixed patch size.
+# Selects the DENSE attention path. Numerics differ in the safe direction (no .half()
+# cast; qkv stay in the autocast bf16) and windowing uses min(patch_size_max, n_points)
+# rather than a fixed patch size.
+#
+# CORRECTED 2026-08-24 -- the old reason recorded here was STALE. It said flash-attn is
+# "not available on sm_120, two source builds both left it unimportable (jobs
+# 236972/237121)". Those July attempts were superseded: the flash_attn_2_cuda .so in
+# texgen-bw (built 2026-07-29, 992 MB) reports architectures sm_80 sm_90 sm_100 sm_120
+# under cuobjdump --list-elf, and flash_attn 2.8.3.post1 imports fine. So flash IS
+# available on the venus Blackwell nodes and this flag is a COMPARABILITY choice, not a
+# statement about availability -- the two arms this run is compared against were trained
+# with it at 0, so it stays at 0.
+#
+# Measured cost of that choice (RTX 4090 sm_89, same checkpoint, 20 shapes, inference):
+# dense 118.89 s vs flash 115.22 s = 1.03x. The attention op alone at this model's window
+# (N=256, 16 heads, dim 64, batch 32) is 2.94x faster with flash (0.066 ms vs 0.195 ms for
+# torch SDPA) -- but attention is a small share of a model that is mostly sparse convs, so
+# Amdahl flattens it to ~3% end to end, which is inside run-to-run noise.
 export TEXGEN_ENABLE_FLASH=0
 
 # Lightning: without this it detects SLURM and uses its SLURM launcher, which

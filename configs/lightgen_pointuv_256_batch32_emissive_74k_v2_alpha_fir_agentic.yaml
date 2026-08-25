@@ -21,11 +21,16 @@
 # same-recipe-different-site result. The venus-19 run remains the parity-clean number for the
 # paper's dose-response; this one exists so the answer is not gated on one busy node.
 #
-# ⚠️ TEXGEN_ENABLE_FLASH=0 IS MANDATORY HERE AND THE LAUNCHER SETS IT. On cs-venus-05/19
-# flash-attn is UNIMPORTABLE (sm_120, two failed source builds), so those runs take the dense
-# attention path and the flag merely records that. On fir flash_attn 2.8.3 IMPORTS FINE, so
-# leaving the flag unset would silently switch this run to a different attention kernel and
-# different windowing -- a second changed variable, invisible in the loss curve.
+# ⚠️ TEXGEN_ENABLE_FLASH=0 IS MANDATORY HERE AND THE LAUNCHER SETS IT -- for COMPARABILITY,
+# not availability. Corrected 2026-08-24: flash_attn 2.8.3.post1 imports on fir AND on the
+# venus Blackwell nodes, whose texgen-bw .so carries sm_120 SASS (cuobjdump --list-elf:
+# sm_80 sm_90 sm_100 sm_120, built 2026-07-29). The earlier note claiming it is
+# "unimportable on sm_120" described July build attempts that a later build superseded.
+# The arms this run is compared against were all trained with the flag at 0, so leaving it
+# unset here would silently switch to a different attention kernel and different windowing
+# -- a second changed variable, invisible in the loss curve. Keeping it off costs ~3% of
+# wall time (measured; the attention op alone is 2.94x faster with flash, but attention is
+# a small share of this model).
 #
 # ⚠️ DATA LIVES IN $SLURM_TMPDIR, NOT ON /scratch. fir's binding constraint is its INODE quota:
 # 789 K of 1,000 K used (measured 2026-08-23), i.e. ~211 K free, while the extracted training

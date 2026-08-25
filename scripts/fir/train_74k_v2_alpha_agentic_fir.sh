@@ -33,10 +33,13 @@
 #         transformers==4.28.1 diffusers==0.28.0 huggingface_hub==0.25.2 tokenizers==0.13.3
 #
 # WHAT IS DELIBERATELY UNCHANGED FROM THE VENUS LAUNCHER, because each encodes a failure:
-#   * TEXGEN_ENABLE_FLASH=0 -- LOAD-BEARING AND DIFFERENT IN KIND HERE. On the venus nodes
-#     flash-attn is unimportable (sm_120), so the flag only records reality. On fir
-#     flash_attn 2.8.3 IMPORTS, so without this flag the run would silently take a
-#     different attention kernel and different windowing: a second changed variable.
+#   * TEXGEN_ENABLE_FLASH=0 -- a COMPARABILITY choice on every site. flash_attn 2.8.3
+#     imports on fir AND on the venus Blackwell nodes (corrected 2026-08-24: the .so in
+#     texgen-bw carries sm_120 SASS; the old "unimportable on sm_120" note described
+#     superseded July builds). So on no site is the dense path forced by availability --
+#     without this flag the run would silently take a different attention kernel and
+#     different windowing than the arms it is compared against. Measured cost of keeping
+#     it off: ~3% end to end (see the venus-19 launcher for the numbers).
 #   * SLURM_JOB_NAME=bash -- stops Lightning using its SLURM launcher (which demands
 #     ntasks == devices). One task with 4 devices + native spawn is what this code is
 #     validated with; the sibling TRELLIS.2 launcher takes the other route on purpose.
