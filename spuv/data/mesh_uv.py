@@ -504,11 +504,11 @@ class MeshUVDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        # Val: pass an explicit SequentialSampler so Lightning's auto-shard does
-        # NOT replace it. Every rank evaluates on the FULL val set in parallel
-        # (same wall-time as 1-rank because they're independent on each GPU);
-        # rank 0 then logs all val visualizations to wandb. Avoids the
-        # "qualitative panel only shows 1/N samples" issue under DDP.
+        # Val: under DDP, Lightning 2.5.0.post0 replaces any sampler that is not a
+        # DistributedSampler, this SequentialSampler included, so each rank sees its
+        # own shard (padded with repeats to equal length). val/mse and val/psnr are
+        # logged with sync_dist=True, so their means cover every rank; the previews
+        # logged to wandb cover rank 0's shard.
         from torch.utils.data import SequentialSampler
         return self.general_loader(
             self.val_dataset, batch_size=self.cfg.eval_batch_size,
@@ -516,7 +516,7 @@ class MeshUVDataModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self):
-        # Test: same rationale as val — full set on every rank, rank-0 logs.
+        # Test: sharded across ranks under DDP, as val is.
         from torch.utils.data import SequentialSampler
         return self.general_loader(
             self.test_dataset, batch_size=self.cfg.eval_batch_size,
@@ -524,6 +524,7 @@ class MeshUVDataModule(pl.LightningDataModule):
         )
 
     def predict_dataloader(self):
+        # Predict: under DDP, Lightning wraps this sampler so each rank predicts its own shard, without repeats.
         from torch.utils.data import SequentialSampler
         return self.general_loader(
             self.test_dataset, batch_size=self.cfg.eval_batch_size,

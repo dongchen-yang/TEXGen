@@ -33,7 +33,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
     cfg: Config
 
     def configure(self):
-        self.check_diffusion_loss_dict(self.cfg.loss.diffusion_loss_dict)    # before anything is built
+        self.check_loss_config(self.cfg.loss)    # before anything is built
         super().configure()
         self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(
             self.cfg.image_tokenizer
@@ -272,17 +272,25 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         return total_loss
 
     @staticmethod
-    def check_diffusion_loss_dict(diffusion_loss_dict):
-        """Raise on a nonzero lambda_* that get_diffusion_loss does not implement, rather than train without it.
+    def check_loss_config(loss):
+        """Raise on a loss setting get_diffusion_loss ignores, rather than train without it.
 
-        Zero values pass: the published config still sets lambda_dark_region: 0.0.
+        get_diffusion_loss reads diffusion_loss_dict's lambda_mse and lambda_l1 only. Any other lambda in
+        diffusion_loss_dict or render_loss_dict, the top-level lambdas and the use_min_snr_weight and use_vgg
+        flags must be zero or false; the published configs set them so.
         """
-        for key, value in diffusion_loss_dict.items():
-            if key.startswith("lambda_") and key not in ("lambda_mse", "lambda_l1") and value != 0:
+        settings = {f"diffusion_loss_dict.{key}": value for key, value in loss.diffusion_loss_dict.items()
+                    if key.startswith("lambda_") and key not in ("lambda_mse", "lambda_l1")}
+        settings.update({f"render_loss_dict.{key}": value for key, value in loss.render_loss_dict.items()
+                         if key.startswith("lambda_")})
+        for key in ("lambda_mse", "lambda_l1", "lambda_render_lpips", "lambda_render_mse", "lambda_render_l1",
+                    "use_min_snr_weight", "use_vgg"):
+            settings[key] = getattr(loss, key)
+        for key, value in settings.items():
+            if value != 0:
                 raise ValueError(
-                    f"system.loss.diffusion_loss_dict.{key} = {value}: get_diffusion_loss implements only "
-                    "lambda_mse and lambda_l1; the other loss terms are in lightgen_system.py at tag "
-                    "pre-trim-2026-09-16"
+                    f"system.loss.{key} = {value}: get_diffusion_loss implements only diffusion_loss_dict's "
+                    "lambda_mse and lambda_l1; the other loss terms are at tag pre-trim-2026-09-16"
                 )
 
     def get_diffusion_loss(self, out, diffusion_data):
@@ -302,33 +310,16 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         return loss_dict
 
     def get_batched_pred_x0(self, out, timesteps, noisy_input):
+        """x0 from the predicted velocity, for the training panels.
+
+        Training noises x_t = (1 - (1 - sigma_min) t) noise + t x0 (get_conditional_flow) and regresses
+        v = x0 - noise (get_diffusion_loss). So x_t = (1 + sigma_min t) noise + t v, which gives
+        noise = (x_t - t v) / (1 + sigma_min t) and x0 = noise + v. Exact inside the UV islands;
+        prepare_diffusion_data zeroes x_t outside them.
         """
-        Get predicted x0 from model output based on prediction type.
-        """
-        # Ensure alphas_cumprod is on the same device as timesteps
-        device = timesteps.device
-        alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device)
-
-        # Convert timesteps to long type for indexing
-        timesteps = timesteps.long()
-
-        if self.prediction_type == "epsilon":
-            # out is predicted noise
-            alpha_prod_t = alphas_cumprod[timesteps]
-            beta_prod_t = 1 - alpha_prod_t
-            pred_x0 = (noisy_input - beta_prod_t.sqrt().view(-1, 1, 1, 1) * out) / alpha_prod_t.sqrt().view(-1, 1, 1, 1)
-        elif self.prediction_type == "sample":
-            # out is directly predicted x0
-            pred_x0 = out
-        elif self.prediction_type == "v_prediction":
-            # out is v-prediction
-            alpha_prod_t = alphas_cumprod[timesteps]
-            beta_prod_t = 1 - alpha_prod_t
-            pred_x0 = alpha_prod_t.sqrt().view(-1, 1, 1, 1) * noisy_input - beta_prod_t.sqrt().view(-1, 1, 1, 1) * out
-        else:
-            raise ValueError(f"Unknown prediction type: {self.prediction_type}")
-
-        return pred_x0
+        t = timesteps[:, None, None, None]
+        noise = (noisy_input - t * out) / (1 + self.sigma_min * t)
+        return noise + out
 
     def on_check_train(self, batch, outputs):
         if (
@@ -375,6 +366,10 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             self.backbone_ema.restore(self.backbone.parameters())
             self._ema_switched = False
 
+    # trainer.test runs on the EMA weights too, as upstream's test_step did through ema_scope
+    on_test_epoch_start = on_validation_epoch_start
+    on_test_epoch_end = on_validation_epoch_end
+
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         if batch_idx == 0:
@@ -405,9 +400,9 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         pred_x0, gt_x0, mask_map = texture_map_outputs["pred_x0"], texture_map_outputs["gt_x0"], texture_map_outputs["mask_map"]
         mse, psnr = uv_mse_psnr(denorm_masked(pred_x0, mask_map, normalized), denorm_masked(gt_x0, mask_map, normalized))
 
-        # Log metrics (aggregated per epoch, x-axis is trainer/global_step via define_metric)
-        self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # Log metrics (aggregated per epoch and averaged over ranks, x-axis is trainer/global_step via define_metric)
+        self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log('val/psnr', psnr, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         def uv_preview(x, mask, normalized):
             """One shape's UV map as the [H, W, C] image every preview saves."""
