@@ -8,9 +8,10 @@ conditioning on the shape's thumbnail with a fixed text prompt. Fork `dongchen-y
 branch `main`, directory `TEXGen-Emission/` in the parent repo. Parent repo conventions:
 `lightgen/AGENTS.md`; the agent rule for this folder: `lightgen/.claude/rules/texgen_emission.md`.
 
-**Where things are.** `spuv/` is upstream TEXGen edited on top: the files we use are
-upstream's, renamed `texgen_emission_*` where they changed role, with upstream's class names;
-the rest carries only the compatibility fixes listed under "The upstream delta":
+**Where things are.** `spuv/` is upstream TEXGen edited on top. Upstream files that took our
+role are renamed `texgen_emission_*` (`mesh_uv.py` keeps its name) and edited in place, with
+upstream's class names; upstream files kept at their path carry only the fixes listed under
+"The upstream delta"; our added helpers are under `spuv/utils/`. The files that matter:
 `spuv/data/mesh_uv.py` (the atlas loader and datamodule, `MeshUVDataset`; upstream's Objaverse
 loader is gone),
 `spuv/systems/texgen_emission_base.py` (`TEXGenBaseSystem`: construction, EMA, the hooks) and
@@ -20,12 +21,19 @@ loader is gone),
 `spuv/utils/uv_metrics.py` (the shared tensor helpers),
 `spuv/utils/launch_ext.py` and `spuv/utils/wandb_utils.py` (what `launch.py` calls),
 `spuv/utils/seed.py`, `spuv/utils/memory_tracker.py`. At the root: `launch.py` (upstream's
-entry point plus a few lines), `inference_specific_samples.py`, `configs/`, `tools/`, `tests/`.
-Four one-line files in `spuv/` keep the paths the published checkpoints need; do not remove
-them. `spuv/data/lightgen_uv.py`, `spuv/systems/lightgen_system.py` and
+entry point plus a few lines), `inference_specific_samples.py`, `requirements.txt` (upstream's
+list with three pins tightened, the cu118 stack the `texgen` env runs), `requirements_125.txt`
+(ours, kept at the root: a torch 2.9.0 + cu126 package list that matches the workstation's
+`texgen_125` env — not the `texgen` env this repo runs on torch 2.1.0, and not the paper run's
+`texgen-bw`, which `bootstrap_texgen_bw.sh` built from the cu128 index), `configs/`, `tools/`,
+`tests/`.
+Four small re-export files in `spuv/` keep the paths the published checkpoints need; do not
+remove them. `spuv/data/lightgen_uv.py`, `spuv/systems/lightgen_system.py` and
 `spuv/models/sparse_networks/lightgen_pointuvnet.py` re-export our classes under the names every
-published `configs/parsed.yaml` uses; `spuv/systems/texgen_base.py` re-exports `LossConfig`,
-whose old path the checkpoint files pickle (`torch.load` fails without it).
+published `configs/parsed.yaml` uses. Two of the four are pickled paths as well: the published
+checkpoint's pickle names `spuv.systems.lightgen_system.LightGenSystem` and
+`spuv.systems.texgen_base.LossConfig` (the latter file re-exports `LossConfig` and nothing else),
+so `torch.load` fails without either of them even if no config named them.
 
 ## The paper run
 
@@ -44,13 +52,20 @@ whose old path the checkpoint files pickle (`torch.load` fails without it).
 
 `python launch.py --config configs/texgen_emission.yaml --gpu 0 --train [--wandb]` from this
 folder, with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. The config sets
-`auto_resume: true`: a `--train` launch resumes from the newest (by modification time)
-`last*.ckpt` in `checkpoint.dirpath`, or starts fresh when there is none. Every checkpoint also
-stores the LR-scheduler state, restored at train start, and, when the run logs to wandb, its run
-id, which a `--wandb` launch resumes. `spuv/utils/launch_ext.py`'s `fit_with_graceful_exit` catches
-`KeyboardInterrupt` and `SystemExit`, so an interrupted launch can still exit 0: judge a run
-finished by its checkpoint step, not its exit code. The config's data paths and
-`checkpoint.dirpath` still name the paper run's node-local July-era root on star2.
+`auto_resume: true`, and `spuv/utils/launch_ext.py`'s `resolve_resume` then picks what a
+`--train` launch resumes from, in this order: the run's own newest (by modification time)
+`last*.ckpt` in `checkpoint.dirpath`, so a requeued run continues where it stopped; else the
+path given as `resume=<path>`; else it starts fresh. It reads the chosen checkpoint once, on
+every rank. Every checkpoint also stores the LR-scheduler state, restored at train start, and,
+when the run logs to wandb, its run id, which a `--wandb` launch resumes; `wandb.dir` sets where
+the run is written (it reaches `wandb.init` through the logger's `save_dir`, so an offline run no
+longer lands in the current directory). `fit_with_graceful_exit` finishes the wandb run on
+`KeyboardInterrupt` or `SystemExit` and then re-raises, so an interrupted launch exits non-zero
+and the `trainer.test` after fit does not run; still judge a run finished by its checkpoint step,
+not by its exit code. Under DDP, Lightning replaces the validation and test samplers, so each
+rank scores its own shard of the split; `val/mse` and `val/psnr` are reduced across ranks
+(`sync_dist=True`), while the previews that reach wandb are rank 0's shard. The config's data
+paths and `checkpoint.dirpath` still name the paper run's node-local July-era root on star2.
 
 The paper run's launcher and env bootstrap are its record, not live code:
 `deprecated/2026-09-16/alpha_agentic_paper_run/scripts/star2/train_74k_v2_alpha_agentic_venus19.sh`
@@ -100,30 +115,40 @@ parsing.
 ## Tests
 
 `cd TEXGen-Emission && conda run -n texgen bash -c 'python -m pytest tests -q'` (pytest was added
-to the `texgen` env on 2026-09-16): 38 passed with the GPU. `test_channel_layout.py`,
+to the `texgen` env on 2026-09-16): 64 passed with the GPU. `test_channel_layout.py`,
 `test_flash_gate.py` and the backbone check in `test_config_resolution.py` import the network,
-and `torchsparse` initializes CUDA when it is imported, so they skip without a CUDA device (34
+and `torchsparse` initializes CUDA when it is imported, so they skip without a CUDA device (60
 passed, 3 skipped); run the suite with `CUDA_VISIBLE_DEVICES=` while the GPU is busy. Those counts
 assume the published run's `parsed.yaml` is mirrored under
 `outputs/texgen_alpha_74k_v2_agentic/configs/` and this folder sits inside the parent repo;
 otherwise the tests that read them skip. What each file pins:
 
 - `test_data_contract.py`: the atlas loader's keys, shapes and value ranges, the alpha rules (the
-  npz key wins over the sidecar, missing alpha raises at construction), positional split indices,
-  the `atlas.npz` layout with alpha inside;
+  npz key wins over the sidecar, missing alpha raises at construction), split indices read as
+  positions into the success-filtered rows, and the current bake's layout (`atlas.npz` with alpha
+  inside and no sidecar, and `atlas.npz` winning over an older `somage.npz`);
 - `test_channel_layout.py` (GPU): a 13-channel input gives a 3-channel velocity, and a 12-channel
   batch against the 13-channel config fails loudly;
 - `test_config_resolution.py`: the config's class strings and the alpha guard; the published
   `parsed.yaml` resolving through the re-exports to the same classes and still loading through
   `load_config`; the backbone class (GPU);
-- `test_system_classes.py`: the pickled `LossConfig` path, the `lightgen_system` re-export, the
-  step methods Lightning calls, the check that rejects a nonzero loss weight the loss does not
-  implement, and the image-log override's contract;
+- `test_system_classes.py`: the two pickled paths (`LossConfig` and the `lightgen_system`
+  re-export), the step methods Lightning calls and the test hooks that alias the validation ones,
+  the check that rejects a nonzero loss weight the loss does not implement (on the live config and
+  on every mirrored `parsed.yaml`), the x0 the training panel derives from the flow-matching
+  target, and the image-log override's contract;
 - `test_seed.py`: parity with the parent's `sample_seed` and a pinned value;
 - `test_flash_gate.py` (GPU): the parsing of `TEXGEN_ENABLE_FLASH`;
 - `test_uv_metrics.py`: the shared tensor helpers;
-- `test_launch_ext.py`: the auto-resume, resume-info and checkpoint-dir helpers, the wandb
-  logger arguments and stale-cache cleanup, the shutdown handlers and the `torch.load` patch.
+- `test_launch_ext.py`: the resume choice and the metadata it reads, the checkpoint-dir helpers,
+  the wandb logger arguments (the run directory among them) and stale-cache cleanup, the shutdown
+  handlers, the re-raise on an interrupt and the `torch.load` patch;
+- `test_training_hooks.py`: the training hooks the fold moved into `TEXGenBaseSystem`, driven on
+  the CPU with the toy backbone and tokenizer of `tests/toy_modules.py` — four synthetic shapes,
+  fit, resume, then `trainer.test`; one EMA update per batch and the count restored on resume, the
+  EMA weights swapped in for validation and test and the training weights restored after,
+  `_scheduler_states` written to the checkpoint and read back, and each moved hook still a plain
+  function on the class (a property would pass an `in __dict__` check and never be called).
 
 ## Data contract
 
@@ -133,10 +158,12 @@ otherwise the tests that read them skip. What each file pins:
 plus alpha from the npz key `alpha` (the current bake) or an `alpha.npy` sidecar (the July-era
 roots, including the eval root the published numbers came from), downsamples
 to the config's 256² (bilinear for continuous maps, nearest for the occupancy), normalizes
-emission to [−1, 1], and reads the CLIP thumbnail from `<data_root>/thumbnails/<sha>.png`. A
-missing thumbnail does not raise: `TEXGenDiffusion` warns and conditions on the albedo UV map
-instead. The shape id is the parquet's index, and the shape's folder is
-`<data_root>/<ditem_dir>`. A run with `use_alpha: true` and no alpha fails with
+emission to [−1, 1], and reads the CLIP thumbnail from `<data_root>/thumbnails/<sha>.png`. Every
+shape in a split needs its thumbnail. `collate_fn` takes the batch's thumbnail from its first
+shape: if that one is missing, the whole batch is conditioned on the albedo UV map, with a
+warning, and a thumbnail missing for any later shape fails in `torch.stack`. The shape id is the
+parquet's index, and the shape's folder is `<data_root>/<ditem_dir>`. A run with
+`use_alpha: true` and no alpha fails with
 `AlphaUnavailable`, never silently: the first shape is checked at construction, and the loader
 re-raises the error for any later shape. Split JSONs hold positional indices into the parquet
 filtered to `success == True`. The bake side of the contract is
@@ -167,16 +194,17 @@ renamed files, each against its upstream source at `HEAD`, paired explicitly by 
 script. (In the first part git pairs only `texgen_network.py` by itself; `texgen_base.py` still
 exists as the re-export, and `texgen_test.py` shows as deleted.)
 
-- **Upstream files kept at their path, each change with a reason.** `launch.py` (13 lines added,
-  6 removed: the two environment variables the fork set, the calls into
-  `spuv/utils/launch_ext.py` and `wandb_utils.py`, `weights_only=False`);
-  `spuv/systems/base.py` (one `field(default_factory=…)`, a Python 3.11 rule);
-  `spuv/models/tokenizers/clip.py` (the SD-3.5-large tokenizer and text encoder, `no_grad` image
-  embeds); `spuv/utils/config.py` (`auto_resume`, `wandb`, and `custom_output_dir`, which every
-  published `parsed.yaml` carries and `parse_structured` would reject if removed);
-  `spuv/utils/ops.py`, `typing.py`, `misc.py` (torch.amp, jaxtyping, `weights_only`
-  compatibility); `requirements.txt` pins; `.gitignore` (our output and log dirs and `.claude/`;
-  upstream's `*.sh` rule is dropped). `spuv/utils/saving.py` is upstream's, unchanged.
+- **Upstream files kept at their path, each change with a reason.** `launch.py` (11 lines added,
+  5 removed: the two environment variables the fork sets, the calls into
+  `spuv/utils/launch_ext.py` and `wandb_utils.py`, and the checkpoint dirpath and kwargs read
+  through `launch_ext`); `spuv/systems/base.py` (one `field(default_factory=…)`, a Python 3.11
+  rule); `spuv/models/tokenizers/clip.py` (the SD-3.5-large tokenizer and text encoder, `no_grad`
+  image embeds, the 768-dim comments); `spuv/utils/config.py` (`auto_resume`, `wandb`, and
+  `custom_output_dir`, which every published `parsed.yaml` carries and `parse_structured` would
+  reject if removed); `spuv/utils/ops.py` and `misc.py` (the `torch.amp` API wrappers and
+  `weights_only=False` in `load_module_weights`); `requirements.txt` pins; `.gitignore` (our
+  output and log dirs and `.claude/`; upstream's `*.sh` rule is dropped). `spuv/utils/typing.py`
+  and `spuv/utils/saving.py` are upstream's, unchanged.
   Outside the script's paths, upstream's `configs/texgen_test.yaml` was removed by an earlier
   cleanup (`39c0452`); `README.md`, `assets/`, `static/` and upstream's files in `tools/` are
   unchanged.
@@ -189,13 +217,18 @@ exists as the re-export, and `texgen_test.py` shows as deleted.)
   `forward`, the adaptive-skip in-channel count read from config (a bug for any input width but
   10), CLIP dims 1024 → 768 for the SD-3.5 text encoder, and the `TEXGEN_ENABLE_FLASH` env gate.
   `spuv/systems/texgen_base.py` is now the pickled-path re-export.
-- **Ours, added.** `spuv/utils/{uv_metrics,launch_ext,wandb_utils,seed,memory_tracker}.py` and
-  the three `lightgen_*` re-exports.
+- **Ours, added.** `spuv/utils/{uv_metrics,launch_ext,wandb_utils,seed,memory_tracker}.py`, the
+  three `lightgen_*` re-exports, and, outside the script's paths, `requirements_125.txt` at the
+  root.
 - **Upstream code nothing live imports.** `spuv/models/sparse_networks/utils/feature_baking.py`
   (the render-and-bake path; its `__main__` block names the removed `ObjaverseDataModule`),
-  `spuv/utils/nvdiffrast_utils.py` and `rasterize.py`, `spuv/models/camera.py`, `isosurface.py`,
-  `lpips.py`, `networks.py`, `perceptual_loss.py`, `timestep.py`, and
+  `spuv/utils/nvdiffrast_utils.py` and `spuv/utils/rasterize.py`, `spuv/models/camera.py`,
+  `isosurface.py`, `lpips.py`, `networks.py`, `perceptual_loss.py`, `timestep.py`, and
   `spuv/utils/image_metrics.py` and `snr_utils.py`, kept as upstream left them.
+  `spuv/models/renderers/rasterize.py` is not in that list: the backbone imports
+  `NVDiffRasterizerContext` from it and `PointUVNet.configure` builds one on every backbone build
+  (upstream's `ctx=self.ctx` passthrough), so `nvdiffrast` has to import, and build its plugin, on
+  any node that runs the model.
 
 ## History
 
@@ -212,8 +245,9 @@ sidecar staging script, the paper run's own launcher and its `texgen-bw` bootstr
 `_nonzero_nocopy`) cite the folder. Tag `pre-trim-2026-09-16` (= the head of
 `texgen-74k-v2-venus05`, `ae0e465`) is the last commit before the trim and holds the in-file
 code the fold dropped (the mask-only mode, the GT-mask oracle, the mask-classification and
-dark-region losses, the precomputed-CLIP path, the disabled 3D-render block). Tags
-`archive/texgen-74k-v2-venus05` and `archive/texgen-74k-v2-vulcan` mark the two old branch heads;
+dark-region losses, the precomputed-CLIP path, the disabled 3D-render block, the DDPM noise
+schedule this system never read). Tags `archive/texgen-74k-v2-venus05` and
+`archive/texgen-74k-v2-vulcan` mark the two old branch heads;
 the branches stay on origin, frozen, and the local `texgen-74k-v2-venus05` ref stays until the
 evaluation lane repoints the cs-venus-05 driver.
 
@@ -242,10 +276,54 @@ mode shifts the outputs against normal mode by at most 4 LSB on at most 0.68% of
 applies to the before and the after runs alike; the gate proves the code did not move and does
 not re-derive the published numbers.
 
-Training was not re-run on the old data: verification of the trimmed code is inference only.
-The moved training hooks are covered by `tests/test_launch_ext.py`, `tests/test_system_classes.py`
-and by the hunk-by-hunk review against the pre-trim tag; the first launch of the retrain on the
-new data is the training-path check. Tests: 38 passed with the GPU. Upstream delta after the
+Training was not re-run on the old data: verification of the trimmed code is inference only, and
+no test drives the training path on real data. What does cover it:
+`tests/test_launch_ext.py` pins the resume, wandb and shutdown helpers;
+`tests/test_system_classes.py` pins the class identities, the step methods, the loss guard and
+the training panel's x0; `tests/test_training_hooks.py` runs a toy CPU fit, resume and
+`trainer.test` and checks the EMA count, the EMA swap and restore, the scheduler state in the
+checkpoint, and that every moved hook is still a function. Beyond the tests, the training path
+was read hunk by hunk against the pre-trim tag and driven through a CPU training smoke (a toy
+backbone and tokenizer, synthetic shapes, fit → resume → test): its Lightning `metrics.csv` and
+all 32 saved previews are byte-identical between tag `pre-trim-2026-09-16` and `3312ebd`, and
+after the review fixes differ only where those fixes intended (below). The first launch of the
+retrain on the new data is the real training-path check.
+
+Inference is proven byte for byte; training numerics are equivalent but not bitwise reproducible
+against the paper run. Dropping the construction this fork never used (LPIPS, the DDIM test
+scheduler, the system-level rasterizer, the second CLIP build) changes how much CPU randomness is
+drawn after `seed_everything`, so a rerun of the paper config on this code does not follow the
+paper run's trajectory step for step, even in deterministic mode.
+
+Tests: 64 passed with the GPU; 60 passed and 3 skipped on the CPU. Upstream delta after the
 fold (`bash tools/upstream_diff.sh`):
 
 [the script's output at the final commit, in a code block]
+
+### Training-side differences from the paper run's code
+
+None of them changes the weights a training step produces. They matter when a new run's logs,
+memory figures or wandb panels are read beside the paper run's.
+
+- Each validation batch cleans up memory twice instead of three times (upstream's
+  `on_validation_batch_end` and one call in `validation_step`; the fork had a third inside its
+  own `test_step`), and the `after_validation` log is now taken before the first cleanup.
+- The `train/predictions` panel no longer carries the "GT Emission Mask (condition)" image: the
+  loader does not emit `gt_emission_mask`.
+- Construction no longer builds the DDIM test scheduler, the DDPM noise schedule, a system-level
+  `NVDiffRasterizerContext`, `LPIPS`, SSIM or PSNR, and it builds the CLIP tokenizer once instead
+  of twice. None of them held parameters or buffers, so the checkpoint's keys and the optimizer's
+  parameter groups are unchanged.
+- With `--benchmark`, the `backward` and `train_batch_end` timers no longer include the memory
+  logs and the 10-batch cleanup, which now sit outside the timed region.
+- A resumed run uses less host memory per rank: the checkpoint is read once, inside
+  `resolve_resume`, and freed when it returns; the fork read it twice in `main` and held the
+  second copy across `fit`.
+- `trainer.test` after fit runs on the EMA weights, as upstream's `ema_scope` did.
+- `val/mse` and `val/psnr` are logged with `sync_dist=True`.
+- The training panel's x0 is derived from the flow-matching interpolation the loss uses; the old
+  formula was the DDPM one and drew roughly the noisy input.
+- `wandb.dir` reaches `wandb.init`, so an offline run is written where the config says.
+- An interrupted launch exits non-zero.
+- The resume order (the run's own newest `last*.ckpt` before any explicit `resume=<path>`) and
+  one checkpoint read per rank instead of two.
