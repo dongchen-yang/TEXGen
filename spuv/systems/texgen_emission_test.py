@@ -34,6 +34,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
     cfg: Config
 
     def configure(self):
+        self.check_diffusion_loss_dict(self.cfg.loss.diffusion_loss_dict)    # before anything is built
         super().configure()
         self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(self.cfg.image_tokenizer)
         self.sigma_min = 0.000001            # the floor of get_conditional_flow
@@ -102,7 +103,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
     def forward(self, condition: Dict[str, Any], diffusion_data: Dict[str, Any], condition_drop=None) -> Dict[str, Any]:
         """
-        Override forward to work directly in UV space without 3D-to-UV baking.
+        Work directly in UV space, without 3D-to-UV baking.
         Since our data is already in UV space, we pass pre-baked material properties directly.
 
         The backbone is PointUVNet on pre-baked UV maps.
@@ -168,7 +169,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
            mask_map,
            position_map,
            timesteps,
-           clip_embeddings,  # Changed from image_embeddings to support PointUVNet
+           clip_embeddings,
            mesh,
            image_info,
            data_normalization=self.cfg.data_normalization,
@@ -180,7 +181,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
     def prepare_diffusion_data(self, batch, noisy_images=None):
         """
         Prepare diffusion data from batch.
-        Uses Flow Matching from parent class (matches original TEXGen).
+        Noises the GT emission along get_conditional_flow's flow-matching path (as original TEXGen does).
         """
         device = get_device()
         B = batch['gt_emission'].shape[0]
@@ -196,7 +197,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         power = 2  # Skew towards smaller t (more noise)
         timesteps = uniform_samples ** power
 
-        # Add noise using Flow Matching (inherited from parent)
+        # Add noise along the flow-matching path (get_conditional_flow)
         if noisy_images is not None:
             noisy_images = noisy_images.to(dtype=self.dtype)
         else:
@@ -211,7 +212,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         loss_weights = torch.ones_like(timesteps, device=device, dtype=self.dtype)
 
         diffusion_data = {
-            'sample_images': sample_images,  # Either [B, 3, H, W] RGB or [B, 1, H, W] mask
+            'sample_images': sample_images,  # [B, 3, H, W] RGB emission
             'noisy_images': noisy_images,
             'mask_map': mask_map,
             'position_map': position_map,
@@ -331,6 +332,20 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
         return total_loss
 
+    @staticmethod
+    def check_diffusion_loss_dict(diffusion_loss_dict):
+        """Raise on a nonzero lambda_* that get_diffusion_loss does not implement, rather than train without it.
+
+        Zero values pass: the published config still sets lambda_dark_region: 0.0.
+        """
+        for key, value in diffusion_loss_dict.items():
+            if key.startswith("lambda_") and key not in ("lambda_mse", "lambda_l1") and value != 0:
+                raise ValueError(
+                    f"system.loss.diffusion_loss_dict.{key} = {value}: get_diffusion_loss implements only "
+                    "lambda_mse and lambda_l1; the other loss terms are in lightgen_system.py at tag "
+                    "pre-trim-2026-09-16"
+                )
+
     def get_diffusion_loss(self, out, diffusion_data):
         """Flow-matching velocity target v = x0 - noise, MSE and L1 over the UV islands.
 
@@ -395,12 +410,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
             for key, value in texture_map_outputs.items():
                 img = denorm_masked(value, outputs["mask_map"], self.cfg.data_normalization)
-                img_format = {
-                    "type": "rgb",
-                    "img": rearrange(img, "B C H W -> (B H) W C"),
-                    "kwargs": {"data_format": "HWC"},
-                }
-                images.append(img_format)
+                images.append(rgb_panel(rearrange(img, "B C H W -> (B H) W C")))
 
             # Save to disk only, don't log to WandB
             self.save_image_grid(
@@ -410,21 +420,9 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
         if outputs['render_out'] is not None:
             images = [
-                {
-                    "type": "rgb",
-                    "img": rearrange(outputs['render_out'], "B V H W C -> (B H) (V W) C"),
-                    "kwargs": {"data_format": "HWC"},
-                },
-                {
-                    "type": "rgb",
-                    "img": rearrange(outputs['render_gt'], "B V H W C -> (B H) (V W) C"),
-                    "kwargs": {"data_format": "HWC"},
-                },
-                {
-                    "type": "rgb",
-                    "img": rearrange(outputs['rgb_cond'], "B V H W C -> (B H) (V W) C"),
-                    "kwargs": {"data_format": "HWC"},
-                }
+                rgb_panel(rearrange(outputs['render_out'], "B V H W C -> (B H) (V W) C")),
+                rgb_panel(rearrange(outputs['render_gt'], "B V H W C -> (B H) (V W) C")),
+                rgb_panel(rearrange(outputs['rgb_cond'], "B V H W C -> (B H) (V W) C")),
             ]
 
             # Save to disk only, don't log to WandB
@@ -596,7 +594,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         test_num_steps = self.cfg.test_num_steps
 
         B, C, H, W = diffusion_data["mask_map"].shape
-        # Use configured out_channels (3 for RGB, 1 for mask-only)
+        # Use configured out_channels (3, the RGB emission)
         out_channels = self.cfg.backbone.out_channels
         noise = torch.randn((B, out_channels, H, W), device=device, dtype=self.dtype)
         noisy_images = noise

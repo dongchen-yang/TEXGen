@@ -85,7 +85,7 @@ class TEXGenBaseSystem(BaseSystem):
     def configure(self):
         super().configure()
         self.train_regression = self.cfg.train_regression      # on_check_train (the test file) still assigns it
-        # The backbone and its EMA (B 99-106)
+        # The backbone and its EMA, as in upstream texgen_base.py's configure
         self.backbone = spuv.find(self.cfg.backbone_cls)(self.cfg.backbone)
         self.use_ema = self.cfg.use_ema
         self.ema_decay = self.cfg.ema_decay
@@ -93,7 +93,8 @@ class TEXGenBaseSystem(BaseSystem):
         if self.use_ema:
             self.backbone_ema = LitEma(self.backbone, decay=self.ema_decay)
             spuv.info(f"Keeping EMAs of {len(list(self.backbone_ema.buffers()))}.")
-        # The DDPM noise schedule (B 115-135): its alphas_cumprod back the training-panel x0 estimate
+        # The DDPM noise schedule, as in upstream texgen_base.py's configure; its alphas_cumprod
+        # back the training-panel x0 estimate
         self.prediction_type = self.cfg.prediction_type
         temp_noise_scheduler = DDPMScheduler.from_pretrained(
             "lambdalabs/sd-image-variations-diffusers", subfolder="scheduler",
@@ -124,7 +125,8 @@ class TEXGenBaseSystem(BaseSystem):
                 if context is not None:
                     spuv.info(f"{context}: Restored training weights")
 
-    # ---- wandb run id and scheduler state ride in the checkpoint (S 129-186) ----
+    # ---- wandb run id and scheduler state ride in the checkpoint ----
+    # Moved from spuv/systems/base.py, the fork's patch at tag pre-trim-2026-09-16.
     def set_wandb_run_id(self, run_id: Optional[str]):
         self._wandb_run_id = run_id
 
@@ -181,7 +183,8 @@ class TEXGenBaseSystem(BaseSystem):
                 if '_last_lr' in sched_state:
                     spuv.info(f"  Lightning Scheduler {i} last_lr: {sched_state['_last_lr']}")
 
-    # ---- resume verification and scheduler restore (S 308-371) ----
+    # ---- resume verification and scheduler restore ----
+    # Moved from spuv/systems/base.py, the fork's patch at tag pre-trim-2026-09-16.
     def on_train_start(self):
         """Called at the start of training, AFTER checkpoint is loaded."""
         # CRITICAL: Verify checkpoint was actually loaded when resuming
@@ -247,7 +250,8 @@ class TEXGenBaseSystem(BaseSystem):
                     current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 'unknown'
                     spuv.info(f"Scheduler {i} final state: step={scheduler.last_epoch}, LR={current_lr}")
 
-    # ---- memory logging around the training loop (S 231-249, 259-290, 373-391, 446-464, 498-511; B 214-229) ----
+    # ---- memory logging around the training loop ----
+    # Moved from the fork's patches to spuv/systems/base.py and texgen_base.py at tag pre-trim-2026-09-16.
     def on_fit_start(self) -> None:
         super().on_fit_start()
         log_memory("fit_start (after model init)", force=True)
