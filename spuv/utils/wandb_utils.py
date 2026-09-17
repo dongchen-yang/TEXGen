@@ -85,7 +85,8 @@ def build_wandb_logger(cfg, run_id, system):
         clean_stale_wandb_cache(kw.get("dir", "."), run_id)
     # WandbLogger builds wandb.init's "dir" as `save_dir or dir` and save_dir defaults to ".",
     # so the dir has to go in as save_dir or every run writes ./wandb in the cwd.
-    logger = WandbLogger(save_dir=kw.pop("dir", "."), **kw)
+    save_dir = kw.pop("dir", ".")
+    logger = WandbLogger(save_dir=save_dir, **kw)
     system._wandb_logger = logger
     if run_id is not None:
         system.set_wandb_run_id(run_id)

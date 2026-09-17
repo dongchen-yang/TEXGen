@@ -59,7 +59,7 @@ def newest_last_ckpt(cfg) -> Optional[str]:
 
 def resolve_resume(cfg, train: bool, want_wandb: bool):
     """Pick the checkpoint to resume from and read it once: (path, wandb run id, global step, epoch),
-    each None when the checkpoint does not carry it.
+    each None when the checkpoint does not carry it. This function is the only writer of cfg.resume.
 
     On a --train launch with auto_resume (or resume "last"/"latest") the run's own newest last*.ckpt
     wins, so a requeued run continues where it stopped instead of restarting from the weights on the
@@ -80,7 +80,10 @@ def resolve_resume(cfg, train: bool, want_wandb: bool):
         path = given
     cfg.resume = path
     if path is None:
-        spuv.info("Starting fresh: this run has no checkpoint and no resume path was given")
+        if getattr(cfg, "auto_resume", False) or given is not None:
+            spuv.info("Starting fresh: this run has no checkpoint and no resume path was given")
+        else:
+            spuv.info("Starting fresh: no resume path was given and auto_resume is off")
         return None, None, None, None
     try:
         ckpt = torch.load(path, map_location="cpu", weights_only=False)

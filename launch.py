@@ -109,7 +109,7 @@ def main(args, extras) -> None:
 
     # set a different seed for each device
     pl.seed_everything(cfg.seed + get_rank(), workers=True)
-    cfg.resume, wandb_run_id, resume_step, resume_epoch = launch_ext.resolve_resume(
+    _, wandb_run_id, resume_step, resume_epoch = launch_ext.resolve_resume(   # it sets cfg.resume itself
         cfg, train=args.train, want_wandb=args.wandb)
 
     dm = spuv.find(cfg.data_cls)(cfg.data)

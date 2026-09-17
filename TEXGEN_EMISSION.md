@@ -22,10 +22,8 @@ loader is gone),
 `spuv/utils/launch_ext.py` and `spuv/utils/wandb_utils.py` (what `launch.py` calls),
 `spuv/utils/seed.py`, `spuv/utils/memory_tracker.py`. At the root: `launch.py` (upstream's
 entry point plus a few lines), `inference_specific_samples.py`, `requirements.txt` (upstream's
-list with three pins tightened, the cu118 stack the `texgen` env runs), `requirements_125.txt`
-(ours, kept at the root: a torch 2.9.0 + cu126 package list that matches the workstation's
-`texgen_125` env — not the `texgen` env this repo runs on torch 2.1.0, and not the paper run's
-`texgen-bw`, which `bootstrap_texgen_bw.sh` built from the cu128 index), `configs/`, `tools/`,
+list with three pins changed: `bitsandbytes`, `opencv-python` and `flash-attn`; it names no torch
+version, and the `texgen` env runs torch 2.1.0 + cu118), `configs/`, `tools/`,
 `tests/`.
 Four small re-export files in `spuv/` keep the paths the published checkpoints need; do not
 remove them. `spuv/data/lightgen_uv.py`, `spuv/systems/lightgen_system.py` and
@@ -217,9 +215,8 @@ exists as the re-export, and `texgen_test.py` shows as deleted.)
   `forward`, the adaptive-skip in-channel count read from config (a bug for any input width but
   10), CLIP dims 1024 → 768 for the SD-3.5 text encoder, and the `TEXGEN_ENABLE_FLASH` env gate.
   `spuv/systems/texgen_base.py` is now the pickled-path re-export.
-- **Ours, added.** `spuv/utils/{uv_metrics,launch_ext,wandb_utils,seed,memory_tracker}.py`, the
-  three `lightgen_*` re-exports, and, outside the script's paths, `requirements_125.txt` at the
-  root.
+- **Ours, added.** `spuv/utils/{uv_metrics,launch_ext,wandb_utils,seed,memory_tracker}.py` and the
+  three `lightgen_*` re-exports.
 - **Upstream code nothing live imports.** `spuv/models/sparse_networks/utils/feature_baking.py`
   (the render-and-bake path; its `__main__` block names the removed `ObjaverseDataModule`),
   `spuv/utils/nvdiffrast_utils.py` and `spuv/utils/rasterize.py`, `spuv/models/camera.py`,
