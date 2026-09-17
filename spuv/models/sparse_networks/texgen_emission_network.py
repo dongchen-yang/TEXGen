@@ -1,31 +1,19 @@
 import os
-import time
-from typing import Optional, Tuple, Union
+from typing import Tuple
 from dataclasses import dataclass
-import random
-from functools import partial
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-import math
 from einops import rearrange
-import torch.nn.utils.weight_norm as weight_norm
 
-import nvdiffrast.torch as dr
 from torchsparse import nn as spnn
 from torchsparse import SparseTensor
-from timm.models.vision_transformer import Mlp
 
-import spuv
 from .utils.uv_operators import *
 from .utils.emb_utils import *
-from .utils.feature_baking import bake_image_feature_to_uv
 from .utils.sparse_utils import *
 from spuv.models.renderers.rasterize import NVDiffRasterizerContext
 from spuv.utils.misc import get_device
-from spuv.utils.mesh_utils import uv_padding
 from spuv.utils.misc import time_recorder as tr
 
 # Escape hatch for GPUs where flash-attn is unavailable. flash-attn 2.x targets
@@ -54,9 +42,9 @@ from spuv.models.sparse_networks.ptv3_model_texgen import Point as PTV3_Point
 from spuv.models.sparse_networks.ptv3_model_texgen import (
     PointSequential,
     TimeBlock,
-    SerializedPooling,
-    SerializedUnpooling,
 )
+
+# PointUVNet.forward takes pre-baked UV maps from the dataloader (TEXGen-Emission); the original render-and-bake forward is at tag pre-trim-2026-09-16.
 
 
 class PointUVNet(BaseModule):
@@ -72,11 +60,6 @@ class PointUVNet(BaseModule):
         window_size: Tuple[int] = (32, 32, 32, 32)
         skip_input: bool = True
         skip_type: str = "baked_texture"
-        # Concatenate the GT emission mask as an extra input channel (the oracle-conditioning
-        # variant). Must be requested explicitly: it hands the model a mask of the very
-        # emission it is trained to predict, so it can never be enabled as a side effect of
-        # a channel-count arithmetic.
-        use_gt_emission_mask_cond: bool = False
         num_heads: Tuple[int] = (4, 4, 4, 4)
         point_block_num: Tuple[int] = (2, 2, 2, 2)
         use_uv_head: bool = True
@@ -218,47 +201,102 @@ class PointUVNet(BaseModule):
                 condition_drop,
                 ):
         """
-        :param x_dense: dense feature map
-        :param mask_map: dense mask map
-        :param position_map: dense position map
-        :return:
+        Forward pass with pre-baked UV data.
+
+        Args:
+            x_dense: [B, 3, H, W] - noisy emission map
+            mask_map: [B, 1, H, W] - occupancy mask
+            position_map: [B, 3, H, W] - 3D positions in UV space
+            timestep: [B] - diffusion timestep
+            clip_embeddings: [text_emb, image_emb] - CLIP embeddings (can be None)
+            mesh: mesh data (not used in TEXGen-Emission)
+            image_info: dict with 'baked_texture' [B, 6, H, W] (albedo+metal+rough+alpha)
+                        and 'baked_weights' [B, 1, H, W] (occupancy mask)
+            data_normalization: bool - whether data is normalized to [-1, 1]
+            condition_drop: [B] - dropout mask for classifier-free guidance
         """
         skip_x = x_dense
 
-        cond_image_info = {
-            "rgb": image_info["rgb_cond"],
-            "mvp_mtx": image_info["mvp_mtx_cond"],
-        }
+        # Get pre-baked material properties from image_info
+        # These are already in UV space from the dataloader
+        if 'baked_texture' in image_info and 'baked_weights' in image_info:
+            # Use pre-baked data directly (no rasterization needed!)
+            baked_texture = image_info['baked_texture']  # [B, C, H, W] - material properties
+            baked_weights = image_info['baked_weights']  # [B, 1, H, W] - mask/weights
 
-        # for cfg
+            # Ensure proper normalization
+            #[TODO] ensure normalization is correct
+            if data_normalization and baked_texture.max() > 1.0:
+                baked_texture = (baked_texture / 255.0) * 2.0 - 1.0
+            elif data_normalization and baked_texture.max() <= 1.0 and baked_texture.min() >= 0.0:
+                baked_texture = baked_texture * 2.0 - 1.0
+        else:
+            # Fallback: create dummy baked data if not provided
+            # This allows the model to still work even without pre-baked materials
+            print("Warning: No pre-baked texture provided, using zeros")
+            baked_texture = torch.zeros_like(x_dense)
+            baked_weights = mask_map
+
+        # Classifier-free guidance: apply dropout to embeddings
         input_embeddings = []
-        condition_drop = condition_drop.unsqueeze(-1)
-        for i, _ in enumerate(clip_embeddings):
-            clip_embedding_null = torch.zeros_like(clip_embeddings[i], device=x_dense.device, dtype=x_dense.dtype)
-            clip_embedding = condition_drop * clip_embedding_null + (1 - condition_drop) * clip_embeddings[i]
-            input_embeddings.append(clip_embedding)
-        tr.start("bake")
-        with torch.no_grad():
-            baked_texture, baked_weights = bake_image_feature_to_uv(self.ctx, mesh, cond_image_info, position_map.permute(0, 2, 3, 1))
-            if data_normalization:
-                baked_texture = (2 * baked_texture - 1).detach()
-            else:
-                baked_texture = baked_texture.detach()
-            baked_weights = baked_weights.detach()
-        tr.end("bake")
+        if clip_embeddings is not None and len(clip_embeddings) > 0:
+            condition_drop_expanded = condition_drop.unsqueeze(-1)
+            for i, _ in enumerate(clip_embeddings):
+                if clip_embeddings[i] is not None:
+                    clip_embedding_null = torch.zeros_like(
+                        clip_embeddings[i], device=x_dense.device, dtype=x_dense.dtype
+                    )
+                    clip_embedding = (
+                        condition_drop_expanded * clip_embedding_null +
+                        (1 - condition_drop_expanded) * clip_embeddings[i]
+                    )
+                    input_embeddings.append(clip_embedding)
+                else:
+                    # If specific embedding is None, create appropriate size dummy
+                    if i == 0:
+                        # Text embedding: 1024-dim
+                        input_embeddings.append(
+                            torch.zeros(x_dense.shape[0], 1024, device=x_dense.device, dtype=x_dense.dtype)
+                        )
+                    else:
+                        # Image embedding: 768-dim
+                        input_embeddings.append(
+                            torch.zeros(x_dense.shape[0], 768, device=x_dense.device, dtype=x_dense.dtype)
+                        )
+        else:
+            # For TEXGen-Emission, if no CLIP embeddings provided, create dummy ones
+            # Text embedding: 1024-dim, Image embedding: 768-dim
+            input_embeddings = [
+                torch.zeros(x_dense.shape[0], 1024, device=x_dense.device, dtype=x_dense.dtype),
+                torch.zeros(x_dense.shape[0], 768, device=x_dense.device, dtype=x_dense.dtype)
+            ]
 
-        x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
+        # Build input list: [noisy_emission, position, material, mask]
+        # x_dense: [B, 3, H, W] - noisy emission
+        # position_map: [B, 3, H, W] - 3D positions
+        # baked_texture: [B, 5 or 6, H, W] - albedo(3) + metallic(1) + roughness(1) [+ alpha(1)]
+        # baked_weights: [B, 1, H, W] - occupancy mask
+        concat_list = [x_dense, position_map, baked_texture, baked_weights]
+        x_concat = torch.cat(concat_list, dim=1)
+        assert x_concat.shape[1] == self.cfg.in_channels, (
+            f"assembled input is {x_concat.shape[1]}ch but cfg.in_channels={self.cfg.in_channels}; "
+            f"parts={[t.shape[1] for t in concat_list]}"
+        )
         x_dense = self.input_conv(x_concat) * mask_map
-        if torch.isnan(x_dense).any():
-            print("x_dense has NaN values")
-            breakpoint()
 
+        if torch.isnan(x_dense).any():
+            print("x_dense has NaN values after input_conv")
+            raise ValueError("NaN detected in input processing")
+
+        # Store pyramid features for skip connections
         pyramid_features = []
         pyramid_mask = []
         pyramid_position = []
 
+        # Generate condition embeddings from timestep and CLIP
         condition_embedding = self.condition_embedder(timestep, input_embeddings)
 
+        # Encoder (downsampling path)
         for scale in range(len(self.block_out_channels)):
             tr.start(f"down{scale}")
             x_dense = getattr(self, f"down{scale}")(
@@ -272,32 +310,43 @@ class PointUVNet(BaseModule):
             )
 
             if scale < len(self.block_out_channels) - 1:
+                # Store features for skip connections
                 pyramid_features.append(x_dense)
                 pyramid_mask.append(mask_map)
                 pyramid_position.append(position_map)
 
-                feature_list, mask_map = downsample_feature_with_mask([x_dense, position_map], mask_map)
+                # Downsample features and masks
+                feature_list, mask_map = downsample_feature_with_mask(
+                    [x_dense, position_map], mask_map
+                )
                 x_dense, position_map = feature_list
 
+                # Project to next scale channels
                 x_dense = getattr(self, f"post_conv_down{scale}")(x_dense)
             tr.end(f"down{scale}")
 
+        # Decoder (upsampling path)
         for scale in reversed(range(len(self.block_out_channels) - 1)):
             if scale < len(self.block_out_channels) - 1:
+                # Project back to current scale channels
                 x_dense = getattr(self, f"pre_conv_up{scale}")(x_dense)
 
+                # Upsample features
                 x_dense, _ = upsample_feature_with_mask(x_dense, mask_map)
                 mask_map = pyramid_mask[scale]
                 position_map = pyramid_position[scale]
 
+                # Skip connection: concatenate with encoder features
                 x_dense = torch.cat([x_dense, pyramid_features[scale]], dim=1)
                 x_dense = getattr(self, f"skip_conv{scale}")(x_dense)
 
+                # Layer normalization
                 B, C, H, W = x_dense.shape
                 x_dense = rearrange(x_dense, "B C H W -> (B H W) C")
                 x_dense = getattr(self, f"skip_layer_norm{scale}")(x_dense)
                 x_dense = rearrange(x_dense, "(B H W) C -> B C H W", B=B, H=H)
 
+            # Process at current scale
             x_dense = getattr(self, f"up{scale}")(
                 x_dense,
                 mask_map,
@@ -308,8 +357,10 @@ class PointUVNet(BaseModule):
                 feature_info=None,
             )
 
+        # Final output projection
         x_output = self.output_conv(x_dense)
 
+        # Prepare additional info for output
         addition_info = {
             "pyramid_features": pyramid_features,
             "pyramid_mask": pyramid_mask,
@@ -318,21 +369,30 @@ class PointUVNet(BaseModule):
             "baked_weights": baked_weights,
         }
 
+        # Apply skip connections (residual from input)
         if self.cfg.skip_input:
             if self.cfg.skip_type == "baked_texture":
-                return x_output + baked_weights * baked_texture, addition_info
+                # Skip connection with baked texture (material-based residual)
+                # Only use albedo channels (first 3) for skip to match output channels
+                baked_albedo = baked_texture[:, :3, :, :]  # [B, 3, H, W]
+                return x_output + baked_weights * baked_albedo, addition_info
             elif self.cfg.skip_type == "noise_input":
+                # Skip connection with noisy input
                 return x_output + skip_x, addition_info
             elif self.cfg.skip_type == "adaptive":
+                # Adaptive skip connection with learned gating
                 skip_scale = self.ada_skip_scale(condition_embedding)
                 x0_scale, input_scale = skip_scale.chunk(2, dim=1)
                 x0_scale = x0_scale.unsqueeze(-1).unsqueeze(-1)
                 input_scale = input_scale.unsqueeze(-1).unsqueeze(-1)
+
                 skip_map = self.ada_skip_map(torch.cat([x_concat, x_dense], dim=1))
                 output_scale_map, skip_scale_map = skip_map.chunk(2, dim=1)
 
-                x1 = (1-output_scale_map) * x_output
-                x2 = skip_scale_map * (x0_scale * baked_texture + input_scale * skip_x)
+                x1 = (1 - output_scale_map) * x_output
+                # Only use albedo channels (first 3) for skip to match output channels
+                baked_albedo = baked_texture[:, :3, :, :]  # [B, 3, H, W]
+                x2 = skip_scale_map * (x0_scale * baked_albedo + input_scale * skip_x)
                 x_output = x1 + x2
 
                 addition_info["skip_scale_map"] = skip_scale_map
@@ -341,7 +401,6 @@ class PointUVNet(BaseModule):
                 addition_info["output_scale_input"] = x1
 
                 return x_output, addition_info
-
         else:
             return x_output, addition_info
 
