@@ -36,8 +36,7 @@ class ClipTokenizer(BaseModule):
 
         self.register_non_module(
             "text_encoder",
-            CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-3.5-large", 
-                                         subfolder="text_encoder").to(
+            CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-3.5-large", subfolder="text_encoder").to(
                 self.device, dtype=self.weight_dtype
             ),
         )
@@ -91,9 +90,6 @@ class ClipTokenizer(BaseModule):
         with torch.no_grad():  # Ensure no gradients are tracked for memory efficiency
             image_embeddings = image_encoder(imgs_in_proc.to(self.weight_dtype)).image_embeds
         image_embeddings = rearrange(image_embeddings, "(B N) C -> B (N C)", B=batch_size)
-        
-        # Clean up intermediate tensors
-        del imgs_in_proc
 
         return image_embeddings
 

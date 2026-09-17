@@ -81,7 +81,7 @@ class _TruncExp(Function):  # pylint: disable=abstract-method
         return torch.exp(x)
 
     @staticmethod
-    @custom_bwd()
+    @custom_bwd
     def backward(ctx, g):  # pylint: disable=arguments-differ
         x = ctx.saved_tensors[0]
         return g * torch.exp(torch.clamp(x, max=15))
