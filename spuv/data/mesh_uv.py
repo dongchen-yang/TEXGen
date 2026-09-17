@@ -1,3 +1,4 @@
+"""The TEXGen-Emission dataset and datamodule: one pre-baked UV atlas per shape (npz keys occupancy, position, objnormal, color, metal, rough, emission_color, plus alpha), the CLIP thumbnail, and the split JSON with positional indices into the success-filtered parquet. The npz is atlas.npz (the current bake, alpha inside) or somage.npz (the July-era roots, alpha in an alpha.npy sidecar). The atlas encoding is the contract data_processing/data_preparation writes to. This file replaced upstream's Objaverse loader, which the fork never used."""
 import json
 import math
 import os
@@ -52,9 +53,9 @@ def decode_uint8_to_float(data):
 
 
 @dataclass
-class LightGenDataModuleConfig:
-    data_root: str = "/localhome/dya78/code/lightgen/data/baked_uv_local"
-    parquet_file: str = "/localhome/dya78/code/lightgen/data/baked_uv_local/df_SomgProc_filtered.parquet"
+class MeshUVDataModuleConfig:
+    data_root: str = ""
+    parquet_file: str = ""
     scene_list: str = ""
     eval_scene_list: str = ""
     repeat: int = 1  # for debugging purpose
@@ -82,7 +83,6 @@ class LightGenDataModuleConfig:
     eval_sup_views: int = 4
 
     vertex_transformation: bool = False
-    use_precomputed_clip: bool = False  # Load precomputed CLIP embeddings instead of raw thumbnails
     # Emit alpha_map (glTF opacity) as an extra conditioning channel. Sourced from the npz
     # `alpha` key when present, else an `alpha.npy` sidecar beside it. There is no fallback
     # value: a run configured for alpha that cannot find it must fail, not train on ones.
@@ -99,11 +99,11 @@ class AlphaUnavailable(RuntimeError):
     """
 
 
-class LightGenDataset(Dataset):
+class MeshUVDataset(Dataset):
     def __init__(self, cfg: Any, split: str = "train") -> None:
         super().__init__()
         assert split in ["train", "val", "test"]
-        self.cfg: LightGenDataModuleConfig = cfg
+        self.cfg: MeshUVDataModuleConfig = cfg
         self.split = split
 
         # Load sample list from parquet file (much faster than scanning!)
@@ -209,7 +209,9 @@ class LightGenDataset(Dataset):
                 ditem_dir = f"{sample_id[:3]}-{sample_id[3:6]}/{sample_id}"
             
             sample_path = os.path.join(data_root, ditem_dir)
-            npz_file = os.path.join(sample_path, "somage.npz")
+            npz_file = os.path.join(sample_path, "atlas.npz")          # the current bake (datasets/dataset_73k)
+            if not os.path.exists(npz_file):
+                npz_file = os.path.join(sample_path, "somage.npz")     # the July-era staged roots and the eval root
             
             samples.append({
                 "sample_id": sample_id,
@@ -271,23 +273,15 @@ class LightGenDataset(Dataset):
         alpha_np = self._load_alpha(npz_file, npz_data) if self.cfg.use_alpha else None
         npz_data.close()  # Explicitly close to free file handles
         
-        # Load CLIP conditioning: either precomputed embedding or raw thumbnail
+        # Load the CLIP thumbnail (a missing file falls back to the albedo UV map inside the system, with a warning)
         thumbnail = None
-        clip_image_embedding = None
-        if self.cfg.use_precomputed_clip:
-            # Load precomputed CLIP image embedding
-            emb_path = os.path.join(self.cfg.data_root, "clip_embeddings", f"{sample_id}.pt")
-            if os.path.exists(emb_path):
-                clip_image_embedding = torch.load(emb_path, weights_only=True)  # [768]
-        else:
-            # Load raw thumbnail for online CLIP encoding
-            thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
-            if os.path.exists(thumbnail_path):
-                with Image.open(thumbnail_path) as thumbnail_pil:
-                    thumbnail_img = thumbnail_pil.convert('RGB')
-                    thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
-                    thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3]
-                    thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
+        thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
+        if os.path.exists(thumbnail_path):
+            with Image.open(thumbnail_path) as thumbnail_pil:
+                thumbnail_img = thumbnail_pil.convert('RGB')
+                thumbnail_img = TF.resize(thumbnail_img, [224, 224], interpolation=TF.InterpolationMode.BILINEAR)
+                thumbnail = torch.from_numpy(np.array(thumbnail_img)).float() / 255.0  # [224, 224, 3]
+                thumbnail = thumbnail.unsqueeze(0)  # [1, 224, 224, 3]
         
         # Extract relevant data and convert to torch tensors
         occupancy = torch.from_numpy(occupancy_np).float()  # [512, 512, 1]
@@ -313,10 +307,6 @@ class LightGenDataset(Dataset):
         if alpha is not None:
             alpha = alpha.permute(2, 0, 1)  # [1, 512, 512]
 
-        # GT emission mask: binary mask where any emission channel > threshold (in [0,1] space)
-        # Multiply by occupancy so regions outside UV islands are always 0
-        gt_emission_mask = ((emission_color.max(dim=0, keepdim=True)[0] > 0.001) * occupancy).float()  # [1, 512, 512]
-        
         # Normalize emission_color to [-1, 1] for diffusion
         emission_color = emission_color * 2.0 - 1.0
         
@@ -342,7 +332,6 @@ class LightGenDataset(Dataset):
                 # (baseColorFactor[3] x baseColorTexture.A), not a binary mask.
                 alpha = F.interpolate(alpha.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
             emission_color = F.interpolate(emission_color.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
-            gt_emission_mask = F.interpolate(gt_emission_mask.unsqueeze(0), size=(target_h, target_w), mode='nearest').squeeze(0)
             input_tensor = F.interpolate(input_tensor.unsqueeze(0), size=(target_h, target_w), mode='bilinear', align_corners=False).squeeze(0)
         
         # Construct a mesh with proper UV coordinates for feature baking
@@ -423,11 +412,8 @@ class LightGenDataset(Dataset):
             **({"alpha_map": alpha} if alpha is not None else {}),
             "mask_map": occupancy,  # [1, H, W]
             "gt_emission": emission_color,  # [3, H, W], normalized to [-1, 1]
-            "gt_emission_mask": gt_emission_mask,  # [1, H, W], binary mask where emission > 0
             
-            # CLIP conditioning (one of these will be non-None)
             "thumbnail": thumbnail,  # [1, 224, 224, 3] or None (raw image for online encoding)
-            "clip_image_embedding": clip_image_embedding,  # [768] or None (precomputed)
             
             # Mesh and camera info
             "mesh": mesh,
@@ -468,29 +454,29 @@ class LightGenDataset(Dataset):
         }
 
 
-class LightGenDataModule(pl.LightningDataModule):
-    cfg: LightGenDataModuleConfig
+class MeshUVDataModule(pl.LightningDataModule):
+    cfg: MeshUVDataModuleConfig
 
     def __init__(self, cfg: Optional[Union[dict, DictConfig]] = None) -> None:
         super().__init__()
-        self.cfg = parse_structured(LightGenDataModuleConfig, cfg)
+        self.cfg = parse_structured(MeshUVDataModuleConfig, cfg)
 
     def setup(self, stage=None):
         import time
         if stage in [None, "fit"]:
             t0 = time.time()
             print(f"[stage] building train dataset (stage={stage}) ...", flush=True)
-            self.train_dataset = LightGenDataset(self.cfg, split="train")
+            self.train_dataset = MeshUVDataset(self.cfg, split="train")
             print(f"[stage] train dataset: {len(self.train_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "fit", "validate"]:
             t0 = time.time()
             print(f"[stage] building val dataset ...", flush=True)
-            self.val_dataset = LightGenDataset(self.cfg, split="val")
+            self.val_dataset = MeshUVDataset(self.cfg, split="val")
             print(f"[stage] val dataset: {len(self.val_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "test", "predict"]:
             t0 = time.time()
             print(f"[stage] building test dataset ...", flush=True)
-            self.test_dataset = LightGenDataset(self.cfg, split="test")
+            self.test_dataset = MeshUVDataset(self.cfg, split="test")
             print(f"[stage] test dataset: {len(self.test_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
 
     def prepare_data(self):
@@ -555,7 +541,7 @@ class LightGenDataModule(pl.LightningDataModule):
         for key in batch[0].keys():
             first = batch[0][key]
             if first is None:
-                # All items should be None (e.g. thumbnail when using precomputed clip)
+                # All items should be None (a thumbnail that no shape in the batch had)
                 collated[key] = None
             elif isinstance(first, torch.Tensor):
                 collated[key] = torch.stack([item[key] for item in batch], dim=0)
