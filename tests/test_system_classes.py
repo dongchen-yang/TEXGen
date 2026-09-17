@@ -1,8 +1,11 @@
 """The system classes the checkpoints and Lightning reach by name (CPU: nothing here imports the network)."""
+import glob
 import importlib
+import os
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 import spuv.systems.texgen_emission_base as texgen_emission_base
 import spuv.systems.texgen_emission_test as texgen_emission_test
@@ -10,6 +13,10 @@ from spuv.systems.texgen_emission_base import LossConfig, TEXGenBaseSystem
 from spuv.systems.texgen_emission_test import TEXGenDiffusion
 from spuv.utils.config import parse_structured
 from spuv.utils.saving import SaverMixin
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+LIVE_CONFIG = os.path.join(ROOT, "configs", "texgen_emission.yaml")
+PUBLISHED_CONFIGS = sorted(glob.glob(os.path.join(ROOT, "outputs", "*", "configs", "parsed.yaml")))
 
 # system.loss as the published parsed.yaml files and the live config set it.
 PUBLISHED_DIFFUSION_LOSS_DICT = {
@@ -34,7 +41,9 @@ def test_the_pickled_loss_config_path_is_the_same_class():
     assert importlib.import_module("spuv.systems.texgen_base").LossConfig is LossConfig
 
 
-def test_the_config_named_system_path_is_the_same_class():
+def test_the_config_named_and_pickled_system_path_is_the_same_class():
+    # Both a config path (every published parsed.yaml's system_cls) and a pickled one: the
+    # checkpoints' data.pkl names spuv.systems.lightgen_system.LightGenSystem as well.
     from spuv.systems.lightgen_system import LightGenSystem
     assert LightGenSystem is TEXGenDiffusion and issubclass(TEXGenDiffusion, TEXGenBaseSystem)
 
@@ -54,6 +63,21 @@ def test_the_test_hooks_are_the_validation_hooks():
 def test_the_published_loss_config_passes_the_check():
     cfg = parse_structured(TEXGenDiffusion.Config, {"loss": PUBLISHED_LOSS})
     TEXGenDiffusion.check_loss_config(cfg.loss)
+
+
+def test_the_live_config_file_parses_and_its_loss_passes_the_check():
+    # The file itself, not the copy above: an edit to configs/texgen_emission.yaml that the loss
+    # ignores must fail here. parse_structured rejects unknown keys, so this also pins that every
+    # key the file sets is still a Config field.
+    cfg = parse_structured(TEXGenDiffusion.Config, OmegaConf.load(LIVE_CONFIG).system)
+    TEXGenDiffusion.check_loss_config(cfg.loss)
+
+
+@pytest.mark.skipif(not PUBLISHED_CONFIGS, reason="no published parsed.yaml is mirrored here")
+def test_the_published_parsed_yaml_system_sections_parse_and_their_loss_passes_the_check():
+    for path in PUBLISHED_CONFIGS:
+        cfg = parse_structured(TEXGenDiffusion.Config, OmegaConf.load(path).system)
+        TEXGenDiffusion.check_loss_config(cfg.loss)
 
 
 @pytest.mark.parametrize("key, override", [
