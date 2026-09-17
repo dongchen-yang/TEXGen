@@ -188,7 +188,7 @@ filtered to `success == True`. The bake side of the contract is
 
 ## The upstream delta
 
-`bash tools/upstream_diff.sh` prints it: `git diff --stat` of the working tree against
+`bash tools/upstream_diff.sh` prints it: `git diff --stat` of `HEAD` against
 `upstream/main` for `launch.py`, `spuv/`, `requirements.txt` and `.gitignore`, then the three
 renamed files, each against its upstream source at `HEAD`, paired explicitly by name in the
 script. (In the first part git pairs only `texgen_network.py` by itself; `texgen_base.py` still
