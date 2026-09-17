@@ -8,7 +8,6 @@ texgen_emission_test.py keeps the name. The DDIM sampler, the render-based valid
 render losses upstream kept here are at tag pre-trim-2026-09-16. spuv/systems/texgen_base.py
 re-exports LossConfig for the published checkpoints.
 """
-import gc
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,7 +18,7 @@ from diffusers import DDPMScheduler
 import spuv
 from spuv.systems.base import BaseLossConfig, BaseSystem
 from spuv.utils.lit_ema import LitEma
-from spuv.utils.memory_tracker import log_memory, set_baseline
+from spuv.utils.memory_tracker import log_memory, logged_cleanup, set_baseline
 from spuv.utils.wandb_utils import log_image_to_wandb
 
 
@@ -28,11 +27,13 @@ class LossConfig(BaseLossConfig):
     # Every field the published parsed.yaml sets stays, used or not: parse_structured rejects unknown keys.
     diffusion_loss_dict: dict = field(default_factory=dict)
     render_loss_dict: dict = field(default_factory=dict)
+
     lambda_mse: Any = 0.0
     lambda_l1: Any = 0.0
     lambda_render_lpips: Any = 0.0
     lambda_render_mse: Any = 0.0
     lambda_render_l1: Any = 0.0
+
     use_min_snr_weight: bool = False
     use_vgg: bool = False
     p_loss_type: str = "lpips"
@@ -42,6 +43,8 @@ class LossConfig(BaseLossConfig):
 class TEXGenBaseSystem(BaseSystem):
     @dataclass
     class Config(BaseSystem.Config):
+        # No reader: render_background_color, random_background_color, test_save_json, test_scheduler_type,
+        # test_save_mid_result, train_image_scaling, cond_rgb_perturb(_scale); kept so published parsed.yaml files parse.
         loss: LossConfig = field(default_factory=LossConfig)
 
         backbone_cls: str = ""
@@ -84,8 +87,10 @@ class TEXGenBaseSystem(BaseSystem):
 
     def configure(self):
         super().configure()
-        self.train_regression = self.cfg.train_regression      # on_check_train (the test file) still assigns it
-        # The backbone and its EMA, as in upstream texgen_base.py's configure
+
+        self.train_regression = self.cfg.train_regression
+
+        # Model
         self.backbone = spuv.find(self.cfg.backbone_cls)(self.cfg.backbone)
         self.use_ema = self.cfg.use_ema
         self.ema_decay = self.cfg.ema_decay
@@ -93,17 +98,23 @@ class TEXGenBaseSystem(BaseSystem):
         if self.use_ema:
             self.backbone_ema = LitEma(self.backbone, decay=self.ema_decay)
             spuv.info(f"Keeping EMAs of {len(list(self.backbone_ema.buffers()))}.")
-        # The DDPM noise schedule, as in upstream texgen_base.py's configure; its alphas_cumprod
-        # back the training-panel x0 estimate
+
+        # Diffusion noise schedules
         self.prediction_type = self.cfg.prediction_type
+
+        # Important re-configuration
         temp_noise_scheduler = DDPMScheduler.from_pretrained(
             "lambdalabs/sd-image-variations-diffusers", subfolder="scheduler",
             prediction_type=self.prediction_type,
             rescale_betas_zero_snr=self.cfg.rescale_betas_zero_snr
         )
         betas = temp_noise_scheduler.betas
-        betas[-1] = 0.9999 if betas[-1] == 1.0 else betas[-1]    # avoid nan during inference
+        # avoid nan during inference
+        betas[-1] = 0.9999 if betas[-1] == 1.0 else betas[-1]
+
         self.betas = betas
+        # Important re-configuration
+
         self.noise_scheduler = DDPMScheduler(
             prediction_type=self.prediction_type,
             trained_betas=self.betas.numpy(),
@@ -166,11 +177,11 @@ class TEXGenBaseSystem(BaseSystem):
         if 'epoch' in checkpoint and 'global_step' in checkpoint:
             spuv.info(f"Loading checkpoint from epoch {checkpoint['epoch']}, global_step {checkpoint['global_step']}")
 
-        # Store scheduler state for restoration in on_fit_start
+        # Store scheduler state for restoration in on_train_start
         # (can't restore here because schedulers aren't created yet)
         self._saved_scheduler_states = checkpoint.get('_scheduler_states', None)
         if self._saved_scheduler_states:
-            spuv.info(f"Found explicitly saved scheduler states in checkpoint")
+            spuv.info("Found explicitly saved scheduler states in checkpoint")
             for i, state in enumerate(self._saved_scheduler_states):
                 spuv.info(f"  Scheduler {i}: last_epoch={state['last_epoch']}, last_lr={state['_last_lr']}")
 
@@ -192,8 +203,8 @@ class TEXGenBaseSystem(BaseSystem):
         if self._resumed:
             current_epoch = self.current_epoch
             current_step = self.global_step
-            spuv.info(f"=" * 80)
-            spuv.info(f"CHECKPOINT RESUME VERIFICATION:")
+            spuv.info("=" * 80)
+            spuv.info("CHECKPOINT RESUME VERIFICATION:")
             spuv.info(f"  Current epoch: {current_epoch}")
             spuv.info(f"  Current global_step: {current_step}")
 
@@ -207,10 +218,10 @@ class TEXGenBaseSystem(BaseSystem):
                     "=" * 80
                 )
             else:
-                spuv.info(f"  ✓ Checkpoint state successfully restored!")
+                spuv.info("  ✓ Checkpoint state successfully restored!")
                 spuv.info(f"  Logging will continue from step {current_step}")
 
-            spuv.info(f"=" * 80)
+            spuv.info("=" * 80)
 
         # CRITICAL: Restore scheduler state when resuming training
         if self._resumed and hasattr(self, 'lr_schedulers'):
@@ -269,34 +280,30 @@ class TEXGenBaseSystem(BaseSystem):
         log_memory(f"epoch_start (epoch={self.current_epoch})", force=True)
 
     def on_train_epoch_end(self):
-        log_memory(f"epoch_end_before_cleanup (epoch={self.current_epoch})", force=True)
         if self.current_epoch % 10 == 0:
-            gc.collect()
-            torch.cuda.empty_cache()
-            log_memory(f"epoch_end_after_cleanup (epoch={self.current_epoch})", force=True)
+            logged_cleanup(f"epoch_end_before_cleanup (epoch={self.current_epoch})",
+                           f"epoch_end_after_cleanup (epoch={self.current_epoch})", force=True)
+        else:
+            log_memory(f"epoch_end_before_cleanup (epoch={self.current_epoch})", force=True)
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         # The fork ran BaseSystem's dataset hooks, a 10-batch cleanup, the EMA update, a 5-step cleanup, in that order.
         super().on_train_batch_end(outputs, batch, batch_idx)
         if batch_idx % 10 == 0:
-            log_memory(f"before_batch_cleanup (batch={batch_idx})", self.true_global_step)
-            gc.collect()
-            torch.cuda.empty_cache()
-            log_memory(f"after_batch_cleanup (batch={batch_idx})", self.true_global_step)
+            logged_cleanup(f"before_batch_cleanup (batch={batch_idx})", f"after_batch_cleanup (batch={batch_idx})",
+                           self.true_global_step)
         if self.use_ema:
             self.backbone_ema(self.backbone)
         if self.global_step % 5 == 0:
-            log_memory(f"before_ema_cleanup (step={self.global_step})", self.global_step)
-            gc.collect()
-            torch.cuda.empty_cache()
-            log_memory(f"after_ema_cleanup (step={self.global_step})", self.global_step)
+            logged_cleanup(f"before_ema_cleanup (step={self.global_step})", f"after_ema_cleanup (step={self.global_step})",
+                           self.global_step)
 
     def on_before_optimizer_step(self, optimizer):
         super().on_before_optimizer_step(optimizer)
         if self.global_step % 50 == 0:
             log_memory("before_optimizer_step", self.global_step, force=True)
 
-    # ---- image saving: upstream logs with step=, we log with our x-axis convention (saving.py) ----
+    # ---- image saving: upstream logs with step=, we log with our x-axis convention (wandb_utils.py) ----
     def save_image_grid(self, filename, imgs, align=None, name=None, step=None, texts=None):
         kwargs = {} if align is None else {"align": align}
         save_path = super().save_image_grid(filename, imgs, name=None, step=None, texts=texts, **kwargs)

@@ -123,3 +123,16 @@ def set_baseline():
 def cleanup(tag: str = "cleanup", log: bool = True):
     """Convenience function to cleanup using global tracker."""
     get_tracker().cleanup(tag, log)
+
+
+def logged_cleanup(before_tag: str, after_tag: str, step: Optional[int] = None, force: bool = False, log: bool = True):
+    """log_memory(before_tag), gc.collect(), torch.cuda.empty_cache(), log_memory(after_tag).
+
+    Both log calls get the same step and force; log=False runs the cleanup without them.
+    """
+    if log:
+        log_memory(before_tag, step, force)
+    gc.collect()
+    torch.cuda.empty_cache()
+    if log:
+        log_memory(after_tag, step, force)

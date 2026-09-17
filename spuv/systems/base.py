@@ -53,7 +53,7 @@ def reset_ema_weights(state_dict):
 class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     @dataclass
     class Config:
-        # Python 3.11 rejects a dataclass instance as a mutable default; the star2 training env runs 3.11.
+        # Python 3.11+ rejects a dataclass instance as a mutable default; the paper run's texgen-bw env ran 3.11.
         loss: BaseLossConfig = field(default_factory=BaseLossConfig)
         optimizer: dict = field(default_factory=dict)
         scheduler: Optional[dict] = None
