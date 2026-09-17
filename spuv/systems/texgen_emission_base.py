@@ -1,18 +1,17 @@
-"""The base system for TEXGen-Emission: construction (the backbone, its EMA, the DDPM noise
-schedule), the EMA scope, the checkpoint/resume/memory hooks and the wandb image-log override.
+"""The base system for TEXGen-Emission: construction (the backbone and its EMA), the EMA scope,
+the checkpoint/resume/memory hooks and the wandb image-log override.
 
 Upstream's texgen_base.py, edited directly. Its class was also named TEXGenDiffusion and was
 overridden by texgen_test.py's class of the same name; here it carries the name upstream's own
 texgen_test.py imported it under, TEXGenBaseSystem, and only TEXGenDiffusion in
-texgen_emission_test.py keeps the name. The DDIM sampler, the render-based validation and the
-render losses upstream kept here are at tag pre-trim-2026-09-16. spuv/systems/texgen_base.py
-re-exports LossConfig for the published checkpoints.
+texgen_emission_test.py keeps the name. The DDIM sampler, the render-based validation, the render
+losses and the DDPM noise schedule upstream kept here are at tag pre-trim-2026-09-16; this system
+trains by flow matching and read none of the schedule. spuv/systems/texgen_base.py re-exports
+LossConfig for the published checkpoints.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-
-from diffusers import DDPMScheduler
+from typing import Any, List, Optional, Tuple
 
 import spuv
 from spuv.systems.base import BaseLossConfig, BaseSystem
@@ -42,9 +41,9 @@ class LossConfig(BaseLossConfig):
 class TEXGenBaseSystem(BaseSystem):
     @dataclass
     class Config(BaseSystem.Config):
-        # Unread upstream keys, kept because the published parsed.yaml files set some of them and parse_structured
-        # rejects unknown keys: render_background_color, random_background_color, test_save_json,
-        # test_scheduler_type, test_save_mid_result, train_image_scaling, cond_rgb_perturb(_scale).
+        # Unread upstream keys, kept because the published parsed.yaml files and configs/texgen_emission.yaml
+        # carry them and parse_structured rejects unknown keys: render_background_color, test_save_json,
+        # test_save_mid_result, cond_rgb_perturb, rescale_betas_zero_snr, prediction_type.
         loss: LossConfig = field(default_factory=LossConfig)
 
         backbone_cls: str = ""
@@ -52,7 +51,6 @@ class TEXGenBaseSystem(BaseSystem):
 
         data_normalization: bool = True
         render_background_color: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-        random_background_color: bool = False
 
         rescale_betas_zero_snr: bool = False
         train_regression: bool = False
@@ -66,12 +64,8 @@ class TEXGenBaseSystem(BaseSystem):
         test_save_json: bool = False
 
         recon_warm_up_steps: int = 0
-        test_scheduler_type: str = "ddim"
         test_save_mid_result: bool = False
 
-        # see On the Importance of Noise Scheduling for Diffusion Models
-        # http://arxiv.org/abs/2301.10972
-        train_image_scaling: float = 1.0
         condition_drop_rate: float = 0.0
         test_cfg_scale: float = 0.0
         guidance_rescale: float = 0.0
@@ -79,7 +73,6 @@ class TEXGenBaseSystem(BaseSystem):
 
         # Cond image augmentation
         cond_rgb_perturb: bool = False
-        cond_rgb_perturb_scale: Dict[str, Any] = field(default_factory=lambda: {})
 
     cfg: Config
     _wandb_run_id: Optional[str] = None      # saved into and restored from checkpoints
@@ -98,28 +91,6 @@ class TEXGenBaseSystem(BaseSystem):
         if self.use_ema:
             self.backbone_ema = LitEma(self.backbone, decay=self.ema_decay)
             spuv.info(f"Keeping EMAs of {len(list(self.backbone_ema.buffers()))}.")
-
-        # Diffusion noise schedules
-        self.prediction_type = self.cfg.prediction_type
-
-        # Important re-configuration
-        temp_noise_scheduler = DDPMScheduler.from_pretrained(
-            "lambdalabs/sd-image-variations-diffusers", subfolder="scheduler",
-            prediction_type=self.prediction_type,
-            rescale_betas_zero_snr=self.cfg.rescale_betas_zero_snr
-        )
-        betas = temp_noise_scheduler.betas
-        # avoid nan during inference
-        betas[-1] = 0.9999 if betas[-1] == 1.0 else betas[-1]
-
-        self.betas = betas
-        # Important re-configuration
-
-        self.noise_scheduler = DDPMScheduler(
-            prediction_type=self.prediction_type,
-            trained_betas=self.betas.numpy(),
-        )
-        self.num_train_timesteps = self.noise_scheduler.num_train_timesteps
 
     @contextmanager
     def ema_scope(self, context=None):

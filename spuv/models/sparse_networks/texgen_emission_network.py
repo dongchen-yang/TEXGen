@@ -299,7 +299,8 @@ class PointUVNet(BaseModule):
             "baked_weights": baked_weights,
         }
 
-        # the skips add albedo, baked_texture's first 3 channels, to the 3 output channels
+        # the baked_texture and adaptive skips add albedo, baked_texture's first 3 channels, to the
+        # 3 output channels; the noise_input skip adds the noisy emission instead
         if self.cfg.skip_input:
             if self.cfg.skip_type == "baked_texture":
                 return x_output + baked_weights * baked_texture[:, :3], addition_info
