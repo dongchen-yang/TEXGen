@@ -83,7 +83,9 @@ def build_wandb_logger(cfg, run_id, system):
     if run_id is not None:
         spuv.info(f"Configuring wandb to resume run ID: {run_id}")
         clean_stale_wandb_cache(kw.get("dir", "."), run_id)
-    logger = WandbLogger(**kw)
+    # WandbLogger builds wandb.init's "dir" as `save_dir or dir` and save_dir defaults to ".",
+    # so the dir has to go in as save_dir or every run writes ./wandb in the cwd.
+    logger = WandbLogger(save_dir=kw.pop("dir", "."), **kw)
     system._wandb_logger = logger
     if run_id is not None:
         system.set_wandb_run_id(run_id)
@@ -116,13 +118,19 @@ def install_step_logger(wandb_logger, system):
 
 
 def ensure_wandb_finish():
-    """Finish the live run, ignoring Ctrl+C while it syncs. Best effort."""
+    """Finish the live run, ignoring Ctrl+C while it syncs, and hand Ctrl+C back afterwards
+    however that goes. Best effort; the one place that finishes a run (launch_ext calls it too)."""
     try:
         import wandb
-        if wandb.run is not None:
-            prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if wandb.run is None:
+            return
+        prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
             spuv.info("Finishing wandb run (syncing data, please wait -- DO NOT press Ctrl+C again)...")
             wandb.finish()
+        except Exception as e:
+            spuv.warn(f"wandb.finish() error: {e}")
+        finally:
             signal.signal(signal.SIGINT, prev)
     except Exception:
         pass
