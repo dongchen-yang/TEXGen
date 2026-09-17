@@ -248,7 +248,7 @@ schedule this system never read). Tags `archive/texgen-74k-v2-venus05` and
 the branches stay on origin, frozen, and the local `texgen-74k-v2-venus05` ref stays until the
 evaluation lane repoints the cs-venus-05 driver.
 
-## Verification (2026-09-16)
+## Verification (2026-09-16, gates re-run 2026-09-17)
 
 Reproduction gate: the published checkpoint, the 204 agentic_clean test shapes, seed 0, the
 workstation 4090, `texgen` env, `TEXGEN_ENABLE_FLASH=0`; `pred_emission.png` byte-compared with
@@ -263,9 +263,9 @@ the repo), which does. A gate passes only at 204 / 0 / 0 against det1.
 | before (tag `pre-trim-2026-09-16`, normal mode) ↔ the published seed-0 test predictions | 16 | 188 | 0 |
 | before ↔ before, run again (normal mode) | 121 | 83 | 0 |
 | det1 ↔ det2 (tag `pre-trim-2026-09-16`, deterministic mode, back to back) | 204 | 0 | 0 |
-| det1 ↔ after the trim (`[trim commit]`, from a detached worktree) | 204 | 0 | 0 |
-| det1 ↔ after the fold and the rename (`[fold commit]`, `TEXGen-Emission/`) | [same] | [different] | [missing] |
-| det1 ↔ after the review fixes (`[final commit]`) | [same] | [different] | [missing] |
+| det1 ↔ after the trim (`c375c64`, from a detached worktree) | 204 | 0 | 0 |
+| det1 ↔ after the fold and the rename (`054afb8`, `TEXGen-Emission/`) | 204 | 0 | 0 |
+| det1 ↔ after the review fixes (`bc4065e`) | 204 | 0 | 0 |
 
 The normal-mode differences are float noise: at most 1 LSB on at most 0.42% of pixels between the
 two local runs, at most 3 LSB on under 0.7% of pixels against the published run. Deterministic
@@ -295,7 +295,37 @@ paper run's trajectory step for step, even in deterministic mode.
 Tests: 64 passed with the GPU; 60 passed and 3 skipped on the CPU. Upstream delta after the
 fold (`bash tools/upstream_diff.sh`):
 
-[the script's output at the final commit, in a code block]
+```
+== launch.py, spuv/, requirements.txt and .gitignore at HEAD against upstream/main
+ .gitignore                                         |  34 +-
+ launch.py                                          |  16 +-
+ requirements.txt                                   |   6 +-
+ spuv/data/lightgen_uv.py                           |   8 +
+ spuv/data/mesh_uv.py                               | 607 ++++++++++++++-------
+ spuv/models/sparse_networks/lightgen_pointuvnet.py |   3 +
+ ...exgen_network.py => texgen_emission_network.py} |  85 +--
+ spuv/models/tokenizers/clip.py                     |  11 +-
+ spuv/systems/base.py                               |   3 +-
+ spuv/systems/lightgen_system.py                    |   4 +
+ spuv/systems/texgen_base.py                        | 555 +------------------
+ spuv/systems/texgen_emission_base.py               | 283 ++++++++++
+ spuv/systems/texgen_emission_test.py               | 523 ++++++++++++++++++
+ spuv/systems/texgen_test.py                        | 374 -------------
+ spuv/utils/config.py                               |  12 +-
+ spuv/utils/launch_ext.py                           | 129 +++++
+ spuv/utils/memory_tracker.py                       | 138 +++++
+ spuv/utils/misc.py                                 |   2 +-
+ spuv/utils/ops.py                                  |  36 +-
+ spuv/utils/seed.py                                 |   9 +
+ spuv/utils/uv_metrics.py                           |  49 ++
+ spuv/utils/wandb_utils.py                          | 159 ++++++
+ 22 files changed, 1877 insertions(+), 1169 deletions(-)
+== upstream files renamed texgen_emission_* and edited in place, each against its upstream source
+   (above, git pairs only texgen_network.py by itself: texgen_base.py is still a file, the re-export, and texgen_test.py shows as deleted)
+ .../{texgen_base.py => texgen_emission_base.py}    | 656 ++++++---------------
+ .../{texgen_test.py => texgen_emission_test.py}    | 493 ++++++++++++++-------
+ ...exgen_network.py => texgen_emission_network.py} | 85 ++++++++++++----------
+```
 
 ### Training-side differences from the paper run's code
 
