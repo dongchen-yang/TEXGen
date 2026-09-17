@@ -1,24 +1,17 @@
 """The TEXGen-Emission dataset and datamodule: one pre-baked UV atlas per shape (npz keys occupancy, position, objnormal, color, metal, rough, emission_color, plus alpha), the CLIP thumbnail, and the split JSON with positional indices into the success-filtered parquet. The npz is atlas.npz (the current bake, alpha inside) or somage.npz (the July-era roots, alpha in an alpha.npy sidecar). The atlas encoding is the contract data_processing/data_preparation writes to. This file replaced upstream's Objaverse loader, which the fork never used."""
 import json
-import math
 import os
-import random
-from dataclasses import dataclass, field
-import math
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from torchvision.transforms import v2 as transform
 import torchvision.transforms.functional as TF
 from PIL import Image
-import imageio
-import cv2
 from torch.utils.data import DataLoader, Dataset
 
-import spuv
 from spuv.utils.config import parse_structured
 from spuv.utils.ops import (
     get_mvp_matrix,
@@ -26,20 +19,6 @@ from spuv.utils.ops import (
 )
 from spuv.utils.typing import *
 from spuv.utils.mesh_utils import *
-from spuv.data.camera_strategy import camera_functions
-
-
-def _parse_scene_list(scene_path):
-    """Parse JSONL file containing scene information"""
-    data = []
-    with open(scene_path, 'r') as file:
-        for line in file:
-            try:
-                json_data = json.loads(line.strip())
-                data.append(json_data)
-            except json.JSONDecodeError as e:
-                print(f"Error decoding JSON: {e} in line: {line}")
-    return data
 
 
 def decode_uint16_to_float(data, min_val=-2.0, max_val=2.0):
@@ -177,7 +156,6 @@ class MeshUVDataset(Dataset):
             return [samples[i] for i in indices]
         elif isinstance(indices, str):
             # Path to JSON file with splits
-            import json
             with open(indices, 'r') as f:
                 split_data = json.load(f)
             # Extract indices for this split
@@ -188,8 +166,6 @@ class MeshUVDataset(Dataset):
 
     def _load_from_parquet(self):
         """Load sample list from parquet file (much faster than scanning)"""
-        import pandas as pd
-        
         # Read parquet file
         df = pd.read_parquet(self.cfg.parquet_file)
         
@@ -273,7 +249,7 @@ class MeshUVDataset(Dataset):
         alpha_np = self._load_alpha(npz_file, npz_data) if self.cfg.use_alpha else None
         npz_data.close()  # Explicitly close to free file handles
         
-        # Load the CLIP thumbnail (a missing file falls back to the albedo UV map inside the system, with a warning)
+        # Load the CLIP thumbnail (None if the file is missing; collate_fn explains what a batch does then)
         thumbnail = None
         thumbnail_path = os.path.join(self.cfg.data_root, "thumbnails", f"{sample_id}.png")
         if os.path.exists(thumbnail_path):
@@ -318,7 +294,6 @@ class MeshUVDataset(Dataset):
         target_h, target_w = self.cfg.uv_height, self.cfg.uv_width
         
         if current_h != target_h or current_w != target_w:
-            import torch.nn.functional as F
             # Resize all UV maps to target resolution
             # Use bilinear for continuous values, nearest for masks
             occupancy = F.interpolate(occupancy.unsqueeze(0), size=(target_h, target_w), mode='nearest').squeeze(0)
@@ -470,12 +445,12 @@ class MeshUVDataModule(pl.LightningDataModule):
             print(f"[stage] train dataset: {len(self.train_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "fit", "validate"]:
             t0 = time.time()
-            print(f"[stage] building val dataset ...", flush=True)
+            print("[stage] building val dataset ...", flush=True)
             self.val_dataset = MeshUVDataset(self.cfg, split="val")
             print(f"[stage] val dataset: {len(self.val_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
         if stage in [None, "test", "predict"]:
             t0 = time.time()
-            print(f"[stage] building test dataset ...", flush=True)
+            print("[stage] building test dataset ...", flush=True)
             self.test_dataset = MeshUVDataset(self.cfg, split="test")
             print(f"[stage] test dataset: {len(self.test_dataset)} samples ({time.time()-t0:.1f}s)", flush=True)
 
@@ -542,7 +517,8 @@ class MeshUVDataModule(pl.LightningDataModule):
         for key in batch[0].keys():
             first = batch[0][key]
             if first is None:
-                # All items should be None (a thumbnail that no shape in the batch had)
+                # The first shape decides: None drops the key for the whole batch; a None after a
+                # tensor fails in torch.stack below
                 collated[key] = None
             elif isinstance(first, torch.Tensor):
                 collated[key] = torch.stack([item[key] for item in batch], dim=0)

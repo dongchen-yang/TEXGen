@@ -85,9 +85,11 @@ auto_resume: true
 # once and survives jobs and requeues
 # (unlike fir, where $SLURM_TMPDIR is wiped per job and must be re-staged).
 #   - texgen_train_root/<shard>/<sha>/somage.npz  (a link to the bake's atlas.npz)
-#   - texgen_train_root/thumbnails/<sha>.png      (CLIP conditioning; a MISSING file
-#     does not raise — TEXGenDiffusion warns and silently falls back to the albedo UV
-#     map, which is how an early run trained 8 epochs on wrong conditioning)
+#   - texgen_train_root/thumbnails/<sha>.png      (CLIP conditioning; every shape in a
+#     split needs one. collate_fn takes the batch's thumbnail from its first shape: if
+#     that one is missing, the whole batch is conditioned on the albedo UV map with a
+#     warning — which is how an early run trained 8 epochs on wrong conditioning — and a
+#     thumbnail missing for any later shape fails in torch.stack)
 # The split's indices are POSITIONAL into the parquet filtered to success==True, so
 # the parquet must be exactly this df_SomgProc_final.parquet.
 data_cls: spuv.data.mesh_uv.MeshUVDataModule
