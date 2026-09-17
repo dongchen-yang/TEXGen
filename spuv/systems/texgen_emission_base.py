@@ -42,8 +42,9 @@ class LossConfig(BaseLossConfig):
 class TEXGenBaseSystem(BaseSystem):
     @dataclass
     class Config(BaseSystem.Config):
-        # No reader: render_background_color, random_background_color, test_save_json, test_scheduler_type,
-        # test_save_mid_result, train_image_scaling, cond_rgb_perturb(_scale); kept so published parsed.yaml files parse.
+        # Unread upstream keys, kept because the published parsed.yaml files set some of them and parse_structured
+        # rejects unknown keys: render_background_color, random_background_color, test_save_json,
+        # test_scheduler_type, test_save_mid_result, train_image_scaling, cond_rgb_perturb(_scale).
         loss: LossConfig = field(default_factory=LossConfig)
 
         backbone_cls: str = ""
