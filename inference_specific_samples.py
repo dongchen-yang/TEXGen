@@ -67,7 +67,9 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             'checkpoint': full_cfg.get('checkpoint', {}),
         })
     else:
-        raise FileNotFoundError(f"no configs/parsed.yaml beside the checkpoint dir: looked at {config_path}")
+        raise FileNotFoundError(
+            "no configs/parsed.yaml beside the checkpoint dir: looked at "
+            f"{ckpt_path_obj.parent.parent / 'configs' / 'parsed.yaml'} and {config_path}")
     
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     print(f"   ✓ Checkpoint loaded (epoch {checkpoint.get('epoch', 'unknown')})")
@@ -76,18 +78,17 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
     print("\n2. Setting up data module...")
     from spuv.data.mesh_uv import MeshUVDataModule
     
-    # Override to use full dataset (not filtered) to find all samples
+    # The data root and parquet come from the caller, not from the run's parsed.yaml
     cfg_data = cfg.data.copy()
-    # Use full dataset paths
     cfg_data.parquet_file = parquet_file
     cfg_data.data_root = data_root
     print(f"   Using dataset: {cfg_data.parquet_file}")
     print(f"   data_root: {cfg_data.data_root} (thumbnails from {cfg_data.data_root}/thumbnails/)")
     
-    # Don't apply train/val/test filters
+    # No split: positions are looked up in the whole success-filtered parquet below
     cfg_data.test_indices = None
     
-    # Create a custom dataset that only loads specific samples
+    # The test dataset over the whole parquet; shapes are picked by position below
     data_module = MeshUVDataModule(cfg_data)
     data_module.setup('test')
     
@@ -135,7 +136,7 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
     val_with_ema = cfg.system.get('val_with_ema', True)
     data_normalization = cfg.system.get('data_normalization', True)
     
-    print(f"\n6. Config settings:")
+    print("\n6. Config settings:")
     print(f"   - use_ema: {use_ema}")
     print(f"   - val_with_ema: {val_with_ema}")
     print(f"   - data_normalization: {data_normalization}")
@@ -160,9 +161,6 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
                 batch[key] = value.unsqueeze(0).to(device)
             elif isinstance(value, dict):
                 batch[key] = value
-            elif key == 'thumbnail' and isinstance(value, torch.Tensor):
-                # Thumbnail should be moved to device but keep its shape
-                batch[key] = value.to(device)
             elif isinstance(value, (list, tuple)):
                 batch[key] = [value]
             else:
@@ -189,11 +187,11 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             with torch.cuda.amp.autocast(enabled=False):
                 # Use EMA weights if enabled (matching validation)
                 if use_ema and val_with_ema:
-                    print(f"      Using EMA weights for inference")
+                    print("      Using EMA weights for inference")
                     with model.ema_scope("Inference with ema weights"):
                         texture_map_outputs = model.test_pipeline(batch)
                 else:
-                    print(f"      Using regular weights for inference")
+                    print("      Using regular weights for inference")
                     texture_map_outputs = model.test_pipeline(batch)
             
             # Extract results
@@ -251,12 +249,12 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             Image.fromarray(comparison).save(sample_dir / "comparison.png")
             
             print(f"      ✓ Saved to {sample_dir}/")
-            print(f"         - input_albedo.png")
-            print(f"         - gt_emission.png")
-            print(f"         - pred_emission.png")
+            print("         - input_albedo.png")
+            print("         - gt_emission.png")
+            print("         - pred_emission.png")
             if thumbnail_img is not None:
-                print(f"         - thumbnail.png")
-            print(f"         - comparison.png (input | gt | pred)")
+                print("         - thumbnail.png")
+            print("         - comparison.png (input | gt | pred)")
             
             # Compute metrics
             from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
