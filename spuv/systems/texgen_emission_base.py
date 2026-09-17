@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch
 from diffusers import DDPMScheduler
 
 import spuv
