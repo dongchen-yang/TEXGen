@@ -37,6 +37,7 @@ pytestmark = [
     pytest.mark.filterwarnings("ignore:.*does not have many workers"),
     pytest.mark.filterwarnings("ignore:Trying to infer the `batch_size`"),
     pytest.mark.filterwarnings("ignore:Checkpoint directory .* exists and is not empty"),
+    pytest.mark.filterwarnings("ignore:GPU available but not used"),      # CPU on purpose
 ]
 
 # Every hook the fork moved into TEXGenBaseSystem. Lightning calls a hook through getattr, so a
