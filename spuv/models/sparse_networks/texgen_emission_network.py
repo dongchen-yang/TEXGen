@@ -226,7 +226,8 @@ class PointUVNet(BaseModule):
         # roughness (1) + alpha (1), occupancy mask (1); 12 when the data carries no alpha
         x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
         assert x_concat.shape[1] == self.cfg.in_channels, (
-            f"input has {x_concat.shape[1]} channels, cfg.in_channels is {self.cfg.in_channels}"
+            f"assembled input is {x_concat.shape[1]}ch but cfg.in_channels={self.cfg.in_channels}; "
+            f"parts={[t.shape[1] for t in (x_dense, position_map, baked_texture, baked_weights)]}"
         )
         x_dense = self.input_conv(x_concat) * mask_map
         if torch.isnan(x_dense).any():
