@@ -1,3 +1,5 @@
+# This file was configs/lightgen_pointuv_256_batch32_emissive_74k_v2_alpha_venus19_agentic.yaml at tag pre-trim-2026-09-16, the name the run of record was launched with.
+# The sibling configs the comments below name are under deprecated/2026-09-16/.
 # _v2 ALPHA AGENTIC venus19 (2026-08-23): the alpha-conditioned run trained on the
 # AGENTIC-FILTERING training set. Its comparison arm is the heuristic-filtering run,
 # lightgen_pointuv_256_batch32_emissive_74k_v2_alpha_venus05_nonzero_nocopy.yaml, and it
@@ -46,15 +48,15 @@
 # for ONE thing: the backbone additionally consumes a per-texel alpha (glTF opacity)
 # channel, so in_channels goes 12 -> 13 and data.use_alpha is set.
 #
-# Input channel order (assembled in lightgen_system.forward + lightgen_pointuvnet.forward):
+# Input channel order (assembled in TEXGenDiffusion.forward + PointUVNet.forward):
 #   noisy_emission(3) + position(3) + albedo(3) + metal(1) + rough(1) + ALPHA(1) + mask(1)
 # Alpha rides inside baked_texture (5 -> 6 ch) so it lands before the occupancy mask and
 # gets the same [0,1] -> [-1,1] remap as albedo/metal/rough.
 #
-# NOTE in_channels: 13 ALSO describes the unrelated gt_mask_cond variant. The two are told
-# apart by explicit flags, never by channel count: this run sets data.use_alpha=true and
-# leaves backbone.use_gt_emission_mask_cond at its false default. Setting in_channels: 13
-# without use_alpha would hand the model the GT emission mask it is trained to predict.
+# NOTE in_channels: 13 means the alpha variant. The GT-emission-mask input variant and its
+# backbone flag were removed on 2026-09-16 (its configs are under deprecated/2026-09-16/). With
+# data.use_alpha set, the loader raises AlphaUnavailable for a shape whose alpha is missing or
+# not a uint8 (H, W, 1) plane, instead of silently dropping that shape from its batch.
 #
 # Alpha provenance (74k append pass, complete 2026-08-12): 67,057 deterministic re-bake
 # appends / 5,123 nearest-voxel backfills / 750 forced re-bakes. All 72,421 shapes in this
@@ -84,11 +86,11 @@ auto_resume: true
 # (unlike fir, where $SLURM_TMPDIR is wiped per job and must be re-staged).
 #   - texgen_train_root/<shard>/<sha>/somage.npz  (a link to the bake's atlas.npz)
 #   - texgen_train_root/thumbnails/<sha>.png      (CLIP conditioning; a MISSING file
-#     does not raise — LightGenSystem warns and silently falls back to the albedo UV
+#     does not raise — TEXGenDiffusion warns and silently falls back to the albedo UV
 #     map, which is how an early run trained 8 epochs on wrong conditioning)
 # The split's indices are POSITIONAL into the parquet filtered to success==True, so
 # the parquet must be exactly this df_SomgProc_final.parquet.
-data_cls: spuv.data.lightgen_uv.LightGenDataModule
+data_cls: spuv.data.mesh_uv.MeshUVDataModule
 data:
   data_root: "/localscratch/dya78/lightgen/data/texgen_train_root"
   parquet_file: "/localscratch/dya78/lightgen/data/df_SomgProc_final.parquet"
@@ -144,7 +146,7 @@ data:
   # visibly lags.
   num_workers: 4
 
-system_cls: spuv.systems.lightgen_system.LightGenSystem
+system_cls: spuv.systems.texgen_emission_test.TEXGenDiffusion
 system:
   condition_drop_rate: 0.1
   rescale_betas_zero_snr: true
@@ -171,7 +173,7 @@ system:
   image_tokenizer:
     pretrained_model_name_or_path: "lambdalabs/sd-image-variations-diffusers"
 
-  backbone_cls: spuv.models.sparse_networks.lightgen_pointuvnet.LightGenPointUVNet
+  backbone_cls: spuv.models.sparse_networks.texgen_emission_network.PointUVNet
   backbone:
     in_channels: 13
     out_channels: 3
