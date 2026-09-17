@@ -18,6 +18,10 @@ def test_sample_seed_matches_the_parent_canonical_copy():
 
 
 def test_sample_seed_is_pinned_order_independent_and_full_width():
-    assert sample_seed("abc", 0) == 6860934752652134519      # the value the parent's tests/test_seedutil.py pins
+    assert sample_seed("abc", 0) == 6860934752652134519
     assert sample_seed("a", 0) != sample_seed("b", 0)
     assert 0 <= sample_seed("a", 0) < 2 ** 64
+    # the value the parent's evaluation/newdata_eval/tests/test_seedutil.py pins; its top bit is
+    # set, so a copy that masked the digest to int63 would return 4652262302224825907 here
+    v = sample_seed("014276d502484e46b234cd1b73d05a8c", 3)
+    assert v == 13875634339079601715 and v >= 2 ** 63

@@ -1,4 +1,4 @@
-import importlib
+import importlib.util
 
 import pytest
 import torch
@@ -13,8 +13,12 @@ def _enabled(monkeypatch, value):
         monkeypatch.delenv("TEXGEN_ENABLE_FLASH", raising=False)
     else:
         monkeypatch.setenv("TEXGEN_ENABLE_FLASH", value)
-    import spuv.models.sparse_networks.texgen_emission_network as net
-    return importlib.reload(net)._ENABLE_FLASH
+    # A fresh copy, not importlib.reload: reloading would leave the session's module on the last
+    # value tested and hand every later test a new PointUVNet class object.
+    spec = importlib.util.find_spec("spuv.models.sparse_networks.texgen_emission_network")
+    net = importlib.util.module_from_spec(spec)      # module_from_spec sets __package__, so the relative imports resolve
+    spec.loader.exec_module(net)
+    return net._ENABLE_FLASH
 
 
 def test_flash_gate_parses_the_env(monkeypatch):
