@@ -1,18 +1,28 @@
+"""TEXGenDiffusion for TEXGen-Emission: flow matching over a 13-channel UV input (noisy
+emission, position, albedo, metallic, roughness, alpha, occupancy) with CLIP conditioning on
+the shape's thumbnail, MSE+L1 on the velocity over the UV islands, UV-space validation, and
+the Euler sampler the published inference runs.
+
+Upstream's texgen_test.py, edited directly; the class the config names. The conditioning,
+input assembly, loss and training step that the fork kept in lightgen_system.py live here now,
+and test_step and validation_step are upstream's methods, edited in place. The originals are
+at tag pre-trim-2026-09-16.
+"""
+import gc
+import traceback
 from dataclasses import dataclass, field
-import cv2
-import math
+from typing import Any, Dict
+
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 
 import spuv
+from spuv.systems.texgen_emission_base import TEXGenBaseSystem
+from spuv.utils.memory_tracker import init_tracker, log_memory
 from spuv.utils.misc import get_device
-from spuv.utils.typing import *
-from spuv.utils.misc import time_recorder as tr
-from spuv.utils.snr_utils import compute_snr_from_scheduler, get_weights_from_timesteps
-from spuv.utils.mesh_utils import uv_padding
-from spuv.utils.nvdiffrast_utils import *
-from spuv.systems.texgen_base import TEXGenDiffusion as TEXGenBaseSystem
+from spuv.utils.uv_metrics import denorm_masked, emission_mask, fit_height, flip_for_view, rgb_panel, uv_mse_psnr
+from spuv.utils.wandb_utils import wandb_image_chw, wandb_image_hwc
 
 
 class TEXGenDiffusion(TEXGenBaseSystem):
@@ -21,113 +31,144 @@ class TEXGenDiffusion(TEXGenBaseSystem):
         image_tokenizer_cls: str = ""
         image_tokenizer: dict = field(default_factory=dict)
 
+    cfg: Config
+
     def configure(self):
         super().configure()
-        self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(
-            self.cfg.image_tokenizer
-        )
-        self.sigma_min=0.000001
+        self.image_tokenizer = spuv.find(self.cfg.image_tokenizer_cls)(self.cfg.image_tokenizer)
+        self.sigma_min = 0.000001            # the floor of get_conditional_flow
+        self.memory_tracker = init_tracker(enabled=True, log_interval=1)
+        spuv.info("[MEMORY] Memory tracking enabled")
 
     def get_conditional_flow(self, noise, sample, t):
         t = t[:, None, None, None]
         return (1 - (1 - self.sigma_min) * t) * noise + t * sample
 
-    def prepare_diffusion_data(self, batch, noisy_images=None):
-        device = get_device()
-        # Extract integer values from batch dimensions
-        uv_channel = int(batch["uv_channel"][0]) if isinstance(batch["uv_channel"], (list, tuple)) else int(batch["uv_channel"])
-        uv_height = int(batch["uv_height"][0]) if isinstance(batch["uv_height"], (list, tuple)) else int(batch["uv_height"])
-        uv_width = int(batch["uv_width"][0]) if isinstance(batch["uv_width"], (list, tuple)) else int(batch["uv_width"])
-        batch_size = len(batch["mesh"])
-        uv_shape = (batch_size, uv_channel, uv_height, uv_width)
-        if self.training or "uv_map" in batch:
-            sample_images = rearrange(batch["uv_map"], "B H W C -> B C H W").to(dtype=self.dtype)
-            if self.cfg.data_normalization:
-                sample_images = (sample_images * 2 - 1)
+    def prepare_condition_info(self, batch):
+        """
+        Prepare conditioning information from batch.
+        We condition on material properties and geometry.
+        """
+        # Extract material and geometry info
+        albedo_map = batch['albedo_map']  # [B, 3, H, W]
+        metal_map = batch['metal_map']  # [B, 1, H, W]
+        rough_map = batch['rough_map']  # [B, 1, H, W]
+        alpha_map = batch.get('alpha_map', None)  # [B, 1, H, W] or None (no-alpha variants)
+        position_map = batch['position_map']  # [B, 3, H, W]
+        normal_map = batch['normal_map']  # [B, 3, H, W]
+
+        # Pack all material properties into a single tensor for conditioning
+        # This gives us: normal(3) + albedo(3) + metal(1) + rough(1) = 8 channels
+        material_cond = torch.cat([normal_map, albedo_map, metal_map, rough_map], dim=1)  # [B, 8, H, W]
+
+        # Convert to expected format: [B, V, H, W, C]
+        B, C, H, W = material_cond.shape
+        rgb_cond = material_cond.permute(0, 2, 3, 1).unsqueeze(1)  # [B, 1, H, W, 8]
+
+        # Use a fixed prompt (the dataset has no text prompts)
+        # Using consistent prompt rather than scene_id hashes which carry no semantic meaning
+        prompt = ["emission generation"] * B
+
+        # Generate text embeddings (cache since prompt is always "emission generation")
+        if not hasattr(self, '_cached_text_embedding'):
+            self._cached_text_embedding = self.image_tokenizer.process_text(["emission generation"]).to(dtype=self.dtype)  # [1, 768]
+        text_embeddings = self._cached_text_embedding.expand(B, -1)
+
+        # Encode the thumbnail online; guard on tensor-ness because default collate turns None into [None].
+        if isinstance(batch.get('thumbnail'), torch.Tensor):
+            rendered_thumbnail = batch['thumbnail']  # [B, 1, H, W, 3]
+            image_embeddings = self.image_tokenizer.process_image(rendered_thumbnail).to(dtype=self.dtype)
         else:
-            sample_images = None
+            # Fallback: use albedo UV map if thumbnail not available
+            spuv.warn("Thumbnail not found in batch, using albedo UV map as fallback")
+            albedo_for_clip = albedo_map.permute(0, 2, 3, 1).unsqueeze(1)  # [B, 1, H, W, 3]
+            image_embeddings = self.image_tokenizer.process_image(albedo_for_clip).to(dtype=self.dtype)
 
-        if "mask_map" not in batch or "position_map" not in batch:
-            position_map_, mask_map_ = rasterize_batched_geometry_maps(
-                self.ctx, batch["mesh"],
-                uv_height,
-                uv_width
-            )
-            mask_map = rearrange(mask_map_, "B H W C-> B C H W").to(dtype=self.dtype)
-            position_map = rearrange(position_map_, "B H W C -> B C H W").to(dtype=self.dtype)
-        else:
-            mask_map = rearrange(batch["mask_map"], "B H W -> B 1 H W").to(dtype=self.dtype)
-            position_map = rearrange(batch["position_map"], "B H W C -> B C H W").to(dtype=self.dtype)
-
-        # timesteps = torch.rand(batch_size, device=device)
-        # Sample uniformly
-        uniform_samples = torch.rand(batch_size, device=device)
-        # Apply power transformation to skew towards smaller t
-        power = 2  # >1 to skew towards 0
-        timesteps = uniform_samples ** power
-
-        if noisy_images is not None:
-            noisy_images = noisy_images.to(dtype=self.dtype)
-        else:
-            noise = torch.randn(uv_shape, device=device, dtype=self.dtype)
-            if sample_images is not None:
-                noisy_images = self.get_conditional_flow(
-                        noise,
-                        sample_images,
-                        timesteps
-                    )
-            else:
-                noisy_images = noise
-
-        noisy_images *= mask_map
-
-        loss_weights = torch.ones_like(timesteps, device=device, dtype=self.dtype)
-
-        diffusion_data = {
-            "sample_images": sample_images,
-            "position_map": position_map,
-            "mask_map": mask_map,
-            "timesteps": timesteps,
-            "noise": noise,
-            "noisy_images": noisy_images,
-            "batch_loss_weights": loss_weights,
+        condition_info = {
+            'mesh': batch['mesh'],
+            'mvp_mtx_cond': batch['mvp_mtx_cond'],
+            'rgb_cond': rgb_cond,  # Contains all material properties [B, 1, H, W, 8]
+            'text_embeddings': text_embeddings,
+            'image_embeddings': image_embeddings,
+            'prompt': prompt,
+            'albedo_map': albedo_map,
+            'metal_map': metal_map,
+            'rough_map': rough_map,
+            'alpha_map': alpha_map,
+            'normal_map': normal_map,
         }
 
-        return diffusion_data
+        return condition_info
 
-    def forward(self,
-                condition: Dict[str, Any],
-                diffusion_data: Dict[str, Any],
-                condition_drop=None,
-                ) -> Dict[str, Any]:
+    def forward(self, condition: Dict[str, Any], diffusion_data: Dict[str, Any], condition_drop=None) -> Dict[str, Any]:
+        """
+        Override forward to work directly in UV space without 3D-to-UV baking.
+        Since our data is already in UV space, we pass pre-baked material properties directly.
+
+        The backbone is PointUVNet on pre-baked UV maps.
+        """
         mask_map = diffusion_data["mask_map"]
         position_map = diffusion_data["position_map"]
         timesteps = diffusion_data["timesteps"]
         input_tensor = diffusion_data["noisy_images"]
 
-        text_embeddings = condition["text_embeddings"]
-        image_embeddings = condition["image_embeddings"]
-        clip_embeddings = [text_embeddings, image_embeddings]
+        # Get CLIP embeddings (for PointUVNet compatibility)
+        text_embeddings = condition.get("text_embeddings", None)
+        image_embeddings = condition.get("image_embeddings", None)
+        # PointUVNet expects clip_embeddings as a list [text, image]
+        if text_embeddings is not None and image_embeddings is not None:
+            clip_embeddings = [text_embeddings, image_embeddings]
+        else:
+            clip_embeddings = None
 
-        mesh = condition["mesh"]
+        mesh = condition.get("mesh", None)
 
+        # Get material properties (already in UV space)
+        albedo_map = condition.get("albedo_map")  # [B, 3, H, W]
+        normal_map = condition.get("normal_map")  # [B, 3, H, W]
+        metal_map = condition.get("metal_map")    # [B, 1, H, W]
+        rough_map = condition.get("rough_map")    # [B, 1, H, W]
+        alpha_map = condition.get("alpha_map", None)  # [B, 1, H, W] or None
+
+        # Prepare baked_texture: include all material properties (albedo + metallic + roughness
+        # [+ alpha]). Alpha belongs HERE rather than as a later concat element: this is the only
+        # placement that puts it before the occupancy mask in the backbone's input order, gives it
+        # the same [0,1]->[-1,1] remap as the other material channels.
+        if alpha_map is not None:
+            baked_texture = torch.cat([albedo_map, metal_map, rough_map, alpha_map], dim=1)  # [B, 6, H, W]
+        else:
+            baked_texture = torch.cat([albedo_map, metal_map, rough_map], dim=1)  # [B, 5, H, W]
+        baked_weights = mask_map     # [B, 1, H, W]
+
+        # Prepare image info with conditioning
         image_info = {
-            'mvp_mtx_cond': condition["mvp_mtx_cond"],
-            'rgb_cond': condition["rgb_cond"],
+            'mvp_mtx_cond': condition.get("mvp_mtx_cond"),
+            'rgb_cond': condition.get("rgb_cond"),  # Contains all material properties [B, 1, H, W, 8]
+            'baked_texture': baked_texture,  # For PointUVNet: pre-baked material in UV space
+            'baked_weights': baked_weights,  # For PointUVNet: occupancy mask
         }
 
+        # Get batch size from mask_map if input_tensor is None (eval mode)
+        if input_tensor is not None:
+            batch_size = input_tensor.shape[0]
+            device = input_tensor.device
+        else:
+            batch_size = mask_map.shape[0]
+            device = mask_map.device
+
         if condition_drop is None and self.training:
-            condition_drop = torch.rand(input_tensor.shape[0], device=input_tensor.device) < self.cfg.condition_drop_rate
+            condition_drop = torch.rand(batch_size, device=device) < self.cfg.condition_drop_rate
             condition_drop = condition_drop.float()
         elif condition_drop is None:
-            condition_drop = torch.zeros(input_tensor.shape[0], device=input_tensor.device)
+            condition_drop = torch.zeros(batch_size, device=device)
 
+        # Call the backbone (PointUVNet takes clip_embeddings as a [text, image] list)
         output, addition_info = self.backbone(
            input_tensor,
            mask_map,
            position_map,
-           timesteps*1000,
-           clip_embeddings,
+           timesteps,
+           clip_embeddings,  # Changed from image_embeddings to support PointUVNet
            mesh,
            image_info,
            data_normalization=self.cfg.data_normalization,
@@ -136,50 +177,204 @@ class TEXGenDiffusion(TEXGenBaseSystem):
 
         return output, addition_info
 
-    def prepare_condition_info(self, batch):
-        mesh = batch["mesh"]
-        mvp_mtx_cond = batch["mvp_mtx_cond"]
-        uv_map_gt = batch["uv_map"]
-        # Extract integer values from height/width tensors/lists
-        if torch.is_tensor(batch["height"]):
-            image_height = batch["height"].item()
-        elif isinstance(batch["height"], (list, tuple)):
-            image_height = int(batch["height"][0])
+    def prepare_diffusion_data(self, batch, noisy_images=None):
+        """
+        Prepare diffusion data from batch.
+        Uses Flow Matching from parent class (matches original TEXGen).
+        """
+        device = get_device()
+        B = batch['gt_emission'].shape[0]
+
+        sample_images = batch['gt_emission']  # [B, 3, H, W] in [-1, 1]
+
+        # Mask and position
+        mask_map = batch['mask_map']  # [B, 1, H, W]
+        position_map = batch['position_map']  # [B, 3, H, W]
+
+        # Sample timesteps uniformly in [0, 1] with power transformation (like original TEXGen)
+        uniform_samples = torch.rand(B, device=device)
+        power = 2  # Skew towards smaller t (more noise)
+        timesteps = uniform_samples ** power
+
+        # Add noise using Flow Matching (inherited from parent)
+        if noisy_images is not None:
+            noisy_images = noisy_images.to(dtype=self.dtype)
         else:
-            image_height = int(batch["height"])
-        
-        if torch.is_tensor(batch["width"]):
-            image_width = batch["width"].item()
-        elif isinstance(batch["width"], (list, tuple)):
-            image_width = int(batch["width"][0])
-        else:
-            image_width = int(batch["width"])
+            noise = torch.randn_like(sample_images, dtype=self.dtype)
+            if sample_images is not None:
+                noisy_images = self.get_conditional_flow(noise, sample_images, timesteps)
+            else:
+                noisy_images = noise
 
-        # Online rendering the condition image
-        background_color = self.render_background_color
-        rgb_cond = render_batched_meshes(self.ctx, mesh, uv_map_gt, mvp_mtx_cond, image_height, image_width, background_color)
+        noisy_images *= mask_map
 
-        if self.cfg.cond_rgb_perturb and self.training:
-            B, Nv, H, W, C = rgb_cond.shape
-            rgb_cond = rearrange(rgb_cond, "B Nv H W C -> (B Nv) C H W")
-            rgb_cond = self.data_augmentation(rgb_cond, background_color)
-            rgb_cond = rearrange(rgb_cond, "(B Nv) C H W -> B Nv H W C", B=B, Nv=Nv)
+        loss_weights = torch.ones_like(timesteps, device=device, dtype=self.dtype)
 
-        prompt = batch["prompt"]
-        
-        text_embeddings = self.image_tokenizer.process_text(prompt).to(dtype=self.dtype)
-        image_embeddings = self.image_tokenizer.process_image(rgb_cond).to(dtype=self.dtype)
-
-        condition_info = {
-            "mesh": mesh,
-            "mvp_mtx_cond": mvp_mtx_cond,
-            "rgb_cond": rgb_cond,
-            "text_embeddings": text_embeddings,
-            "image_embeddings": image_embeddings,
-            "prompt": prompt,
+        diffusion_data = {
+            'sample_images': sample_images,  # Either [B, 3, H, W] RGB or [B, 1, H, W] mask
+            'noisy_images': noisy_images,
+            'mask_map': mask_map,
+            'position_map': position_map,
+            'timesteps': timesteps,
+            'noise': noise,
+            'batch_loss_weights': loss_weights,
         }
 
-        return condition_info
+        return diffusion_data
+
+    def training_step(self, batch, batch_idx):
+        """Training step"""
+        if batch is None:
+            return None
+
+        # Memory tracking: log at start of training step
+        if batch_idx == 0 or batch_idx % 10 == 0:
+            log_memory(f"train_step_start (epoch={self.current_epoch}, batch={batch_idx})", self.global_step)
+
+        # Prepare data
+        diffusion_data = self.prepare_diffusion_data(batch)
+        condition_info = self.prepare_condition_info(batch)
+
+        if batch_idx % 10 == 0:
+            log_memory(f"after_data_prep (batch={batch_idx})", self.global_step)
+
+        # Forward pass
+        out, addition_info = self(condition_info, diffusion_data)
+
+        if batch_idx % 10 == 0:
+            log_memory(f"after_forward (batch={batch_idx})", self.global_step)
+
+        # Compute loss
+        loss_dict = self.get_diffusion_loss(out, diffusion_data)
+
+        if batch_idx % 10 == 0:
+            log_memory(f"after_loss_compute (batch={batch_idx})", self.global_step)
+
+        # Log losses per-step only (x-axis is trainer/global_step via define_metric)
+        for key, value in loss_dict.items():
+            self.log(f'train/{key}', value, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
+        # Total loss
+        total_loss = sum(loss_dict.values())
+        self.log('train/loss', total_loss, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+
+        # Store outputs for visualization
+        outputs = {
+            'texture_map_outputs': {
+                'pred': out,
+                'gt': diffusion_data['sample_images'],
+            },
+            'mask_map': diffusion_data['mask_map'],
+            'render_out': None,
+            'render_gt': None,
+            'rgb_cond': condition_info['rgb_cond'],
+        }
+
+        # Visualization with wandb logging
+        self.on_check_train(batch, outputs)
+
+        # Log to wandb at the same frequency as check_train_every_n_steps
+        if hasattr(self, '_wandb_logger') and self._wandb_logger is not None:
+            n = self.cfg.check_train_every_n_steps
+            if n > 0 and self.global_step % n == 0:
+                import wandb as _wandb
+                if _wandb.run is not None:
+                    batch_size = out.shape[0]
+                    emissive_threshold = self.cfg.loss.diffusion_loss_dict.get('emissive_threshold', 0.001)
+                    images = []
+
+                    for i in range(batch_size):
+                        s = f"S{i}"
+
+                        # Denoised prediction for sample i
+                        pred_x0_i = self.get_batched_pred_x0(
+                            out[i:i+1],
+                            diffusion_data['timesteps'][i:i+1],
+                            diffusion_data['noisy_images'][i:i+1]
+                        )
+
+                        mask_i = diffusion_data['mask_map'][i:i+1]
+                        pred_img_i = torch.clamp(denorm_masked(pred_x0_i, mask_i), 0, 1)
+                        gt_img_i   = torch.clamp(denorm_masked(diffusion_data['sample_images'][i:i+1], mask_i), 0, 1)
+
+                        # Albedo condition
+                        if 'albedo_map' in batch and batch['albedo_map'] is not None:
+                            albedo_vis_i = torch.clamp(batch['albedo_map'][i:i+1] * mask_i, 0, 1)
+                            images.append(wandb_image_chw(albedo_vis_i, f"{s} Input Albedo (UV)"))
+
+                        # Thumbnail condition
+                        if 'thumbnail' in batch and batch['thumbnail'] is not None:
+                            thumb = batch['thumbnail'][i]  # [1, H, W, 3] or [H, W, 3]
+                            if thumb.dim() == 4:
+                                thumb = thumb[0]
+                            images.append(wandb_image_hwc(thumb, f"{s} Input Rendering"))
+
+                        gt_emask_i   = emission_mask(gt_img_i, emissive_threshold).repeat(1, 3, 1, 1)
+                        pred_emask_i = emission_mask(pred_img_i, emissive_threshold).repeat(1, 3, 1, 1)
+                        images.extend([
+                            wandb_image_chw(pred_img_i, f"{s} Predicted Emission"),
+                            wandb_image_chw(gt_img_i, f"{s} Ground Truth"),
+                            wandb_image_chw(gt_emask_i, f"{s} GT Emission Mask (>{emissive_threshold})"),
+                            wandb_image_chw(pred_emask_i, f"{s} Pred Emission Mask (>{emissive_threshold})"),
+                        ])
+
+                    _wandb.log({"train/predictions": images, "trainer/global_step": self.global_step, "epoch": self.current_epoch})
+                    del images
+
+        # Explicit cleanup of large intermediate tensors after every training step
+        del out, addition_info, outputs
+        del diffusion_data, condition_info
+
+        # Memory tracking: log after cleanup
+        if batch_idx % 10 == 0:
+            log_memory(f"train_step_end (batch={batch_idx})", self.global_step)
+
+        return total_loss
+
+    def get_diffusion_loss(self, out, diffusion_data):
+        """Flow-matching velocity target v = x0 - noise, MSE and L1 over the UV islands.
+
+        The lambda keys live in cfg.loss.diffusion_loss_dict; a zero lambda drops its term
+        from the dict, so the total loss is the sum of what is present.
+        """
+        target = diffusion_data['sample_images'] - diffusion_data['noise']
+        mask = diffusion_data['mask_map']
+        weights = self.cfg.loss.diffusion_loss_dict
+        loss_dict = {}
+        if weights.get('lambda_mse', 0.0) > 0:
+            loss_dict['mse'] = F.mse_loss(out * mask, target * mask, reduction='mean') * weights['lambda_mse']
+        if weights.get('lambda_l1', 0.0) > 0:
+            loss_dict['l1'] = F.l1_loss(out * mask, target * mask, reduction='mean') * weights['lambda_l1']
+        return loss_dict
+
+    def get_batched_pred_x0(self, out, timesteps, noisy_input):
+        """
+        Get predicted x0 from model output based on prediction type.
+        """
+        # Ensure alphas_cumprod is on the same device as timesteps
+        device = timesteps.device
+        alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(device)
+
+        # Convert timesteps to long type for indexing
+        timesteps = timesteps.long()
+
+        if self.prediction_type == "epsilon":
+            # out is predicted noise
+            alpha_prod_t = alphas_cumprod[timesteps]
+            beta_prod_t = 1 - alpha_prod_t
+            pred_x0 = (noisy_input - beta_prod_t.sqrt().view(-1, 1, 1, 1) * out) / alpha_prod_t.sqrt().view(-1, 1, 1, 1)
+        elif self.prediction_type == "sample":
+            # out is directly predicted x0
+            pred_x0 = out
+        elif self.prediction_type == "v_prediction":
+            # out is v-prediction
+            alpha_prod_t = alphas_cumprod[timesteps]
+            beta_prod_t = 1 - alpha_prod_t
+            pred_x0 = alpha_prod_t.sqrt().view(-1, 1, 1, 1) * noisy_input - beta_prod_t.sqrt().view(-1, 1, 1, 1) * out
+        else:
+            raise ValueError(f"Unknown prediction type: {self.prediction_type}")
+
+        return pred_x0
 
     def on_check_train(self, batch, outputs):
         if (
@@ -199,10 +394,7 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             texture_map_outputs = outputs["texture_map_outputs"]
 
             for key, value in texture_map_outputs.items():
-                if self.cfg.data_normalization:
-                    img = (value * 0.5 + 0.5) * outputs["mask_map"]
-                else:
-                    img = value * outputs["mask_map"]
+                img = denorm_masked(value, outputs["mask_map"], self.cfg.data_normalization)
                 img_format = {
                     "type": "rgb",
                     "img": rearrange(img, "B C H W -> (B H) W C"),
@@ -260,11 +452,16 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             self._ema_switched = False
     
     def validation_step(self, batch, batch_idx):
-        self.test_step(batch, batch_idx)
-        # Aggressive memory cleanup to prevent OOM during validation
-        import gc
+        if batch_idx == 0:
+            log_memory(f"validation_start (epoch={self.current_epoch})", self.global_step, force=True)
+        self.test_step(batch, batch_idx)          # upstream's structure: validation runs the test step
+        if batch_idx % 10 == 0 or batch_idx == 0:
+            log_memory(f"after_validation (batch={batch_idx})", self.global_step)
         gc.collect()
         torch.cuda.empty_cache()
+        if batch_idx % 10 == 0 or batch_idx == 0:
+            log_memory(f"after_val_cleanup (batch={batch_idx})", self.global_step)
+        return None
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
@@ -276,33 +473,19 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 # EMA weights are already switched at epoch level, just run inference
                 texture_map_outputs = self.test_pipeline(batch)
         except Exception as e:
-            import traceback
             spuv.info(f"Error in test pipeline: {e}")
             spuv.info(f"Full traceback:\n{traceback.format_exc()}")
             return None
-
-        render_images = {}
-        background_color = self.render_background_color 
 
         # Get batch size (support batched validation)
         batch_size = len(batch["scene_id"])
 
         # Compute and log validation metrics (batched computation for efficiency)
-        pred_x0 = texture_map_outputs["pred_x0"]
-        gt_x0 = texture_map_outputs["gt_x0"]
-        mask_map = texture_map_outputs["mask_map"]
-        
-        # Denormalize if needed for metric computation
-        if self.cfg.data_normalization:
-            pred_img = (pred_x0 * 0.5 + 0.5) * mask_map
-            gt_img = (gt_x0 * 0.5 + 0.5) * mask_map
-        else:
-            pred_img = pred_x0 * mask_map
-            gt_img = gt_x0 * mask_map
-        
-        # Compute MSE and PSNR on UV space (batched)
-        mse = torch.mean((pred_img - gt_img) ** 2)
-        psnr = -10 * torch.log10(mse + 1e-8)
+        normalized = self.cfg.data_normalization
+        pred_x0, gt_x0, mask_map = texture_map_outputs["pred_x0"], texture_map_outputs["gt_x0"], texture_map_outputs["mask_map"]
+        pred_img = denorm_masked(pred_x0, mask_map, normalized)
+        gt_img = denorm_masked(gt_x0, mask_map, normalized)
+        mse, psnr = uv_mse_psnr(pred_img, gt_img)
         
         # Log metrics (aggregated per epoch, x-axis is trainer/global_step via define_metric)
         self.log('val/mse', mse, on_step=False, on_epoch=True, prog_bar=True, logger=True)
@@ -317,18 +500,11 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             
             # save prediction to png file
             value = texture_map_outputs["pred_x0"][b_idx:b_idx+1]
-            if self.cfg.data_normalization:
-                img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-            else:
-                img = value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
+            img = denorm_masked(value, texture_map_outputs["mask_map"][b_idx:b_idx+1], normalized)
             # Important to flip the uv map for possible meshlab loading, for rendering using NvDiffRasterizer, do not flip!
-            flip_img = torch.flip(img, dims=[2])
+            flip_img = flip_for_view(img)
 
-            img_format = [{
-                "type": "rgb",
-                "img": rearrange(flip_img, "B C H W-> (B H) W C"),
-                "kwargs": {"data_format": "HWC"},
-            }]
+            img_format = [rgb_panel(rearrange(flip_img, "B C H W-> (B H) W C"))]
 
             # Save to disk only (not logged to WandB - will be logged in preview below)
             self.save_image_grid(
@@ -340,20 +516,14 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             
             # Prepare prediction
             pred_value = texture_map_outputs["pred_x0"][b_idx:b_idx+1]
-            if self.cfg.data_normalization:
-                pred_img_vis = (pred_value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-            else:
-                pred_img_vis = pred_value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-            pred_flip = torch.flip(pred_img_vis, dims=[2])
+            pred_img_vis = denorm_masked(pred_value, texture_map_outputs["mask_map"][b_idx:b_idx+1], normalized)
+            pred_flip = flip_for_view(pred_img_vis)
             pred_vis = rearrange(pred_flip, "B C H W-> (B H) W C")
             
             # Prepare ground truth
             gt_value = texture_map_outputs["gt_x0"][b_idx:b_idx+1]
-            if self.cfg.data_normalization:
-                gt_img_vis = (gt_value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-            else:
-                gt_img_vis = gt_value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-            gt_flip = torch.flip(gt_img_vis, dims=[2])
+            gt_img_vis = denorm_masked(gt_value, texture_map_outputs["mask_map"][b_idx:b_idx+1], normalized)
+            gt_flip = flip_for_view(gt_img_vis)
             gt_vis = rearrange(gt_flip, "B C H W-> (B H) W C")
             
             # Prepare input condition (thumbnail)
@@ -364,40 +534,24 @@ class TEXGenDiffusion(TEXGenBaseSystem):
                 else:
                     thumbnail_img = thumbnail[0]  # [H, W, 3]
                 
-                # Resize thumbnail to match UV map height for side-by-side display
-                H_uv, W_uv = pred_vis.shape[0], pred_vis.shape[1]
-                H_thumb, W_thumb = thumbnail_img.shape[0], thumbnail_img.shape[1]
-                
-                # Pad thumbnail to match UV map height if needed
-                if H_thumb < H_uv:
-                    pad_top = (H_uv - H_thumb) // 2
-                    pad_bottom = H_uv - H_thumb - pad_top
-                    thumbnail_img = torch.nn.functional.pad(
-                        thumbnail_img.permute(2, 0, 1),  # [3, H, W]
-                        (0, 0, pad_top, pad_bottom),
-                        mode='constant',
-                        value=0
-                    ).permute(1, 2, 0)  # [H, W, 3]
-                elif H_thumb > H_uv:
-                    # Crop if thumbnail is larger
-                    start = (H_thumb - H_uv) // 2
-                    thumbnail_img = thumbnail_img[start:start+H_uv]
+                # Pad or crop the thumbnail to the UV map's height for the side-by-side preview
+                thumbnail_img = fit_height(thumbnail_img, pred_vis.shape[0])
             
             # Prepare input albedo UV map
             if has_albedo:
                 albedo = batch['albedo_map'][b_idx:b_idx+1]  # [1, 3, H, W]
                 albedo_masked = albedo * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-                albedo_flip = torch.flip(albedo_masked, dims=[2])
+                albedo_flip = flip_for_view(albedo_masked)
                 albedo_vis = rearrange(albedo_flip, "B C H W-> (B H) W C")
             
             # Create composite image: [Thumbnail | Albedo | Prediction | Ground Truth]
             composite_imgs = []
             if has_thumbnail:
-                composite_imgs.append({"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}})
+                composite_imgs.append(rgb_panel(thumbnail_img))
             if has_albedo:
-                composite_imgs.append({"type": "rgb", "img": albedo_vis, "kwargs": {"data_format": "HWC"}})
-            composite_imgs.append({"type": "rgb", "img": pred_vis, "kwargs": {"data_format": "HWC"}})
-            composite_imgs.append({"type": "rgb", "img": gt_vis, "kwargs": {"data_format": "HWC"}})
+                composite_imgs.append(rgb_panel(albedo_vis))
+            composite_imgs.append(rgb_panel(pred_vis))
+            composite_imgs.append(rgb_panel(gt_vis))
             
             # Log composite image with object identifier
             object_id = save_str
@@ -410,16 +564,9 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             # Also save individual images to disk (but not to WandB) for reference
             for key, suffix in [("pred_x0", "prediction"), ("gt_x0", "ground_truth")]:
                 value = texture_map_outputs[key][b_idx:b_idx+1]
-                if self.cfg.data_normalization:
-                    img = (value * 0.5 + 0.5) * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-                else:
-                    img = value * texture_map_outputs["mask_map"][b_idx:b_idx+1]
-                flip_img = torch.flip(img, dims=[2])
-                img_format = [{
-                    "type": "rgb",
-                    "img": rearrange(flip_img, "B C H W-> (B H) W C"),
-                    "kwargs": {"data_format": "HWC"},
-                }]
+                img = denorm_masked(value, texture_map_outputs["mask_map"][b_idx:b_idx+1], normalized)
+                flip_img = flip_for_view(img)
+                img_format = [rgb_panel(rearrange(flip_img, "B C H W-> (B H) W C"))]
                 self.save_image_grid(
                     f"it{self.true_global_step}-test/preview/{suffix}_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
                     img_format,
@@ -428,70 +575,18 @@ class TEXGenDiffusion(TEXGenBaseSystem):
             if has_thumbnail:
                 self.save_image_grid(
                     f"it{self.true_global_step}-test/preview/thumbnail_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
-                    [{"type": "rgb", "img": thumbnail_img, "kwargs": {"data_format": "HWC"}}],
+                    [rgb_panel(thumbnail_img)],
                 )
             
             if has_albedo:
                 self.save_image_grid(
                     f"it{self.true_global_step}-test/preview/albedo_{self.global_rank}_{batch_idx}_{b_idx}.jpg",
-                    [{"type": "rgb", "img": albedo_vis, "kwargs": {"data_format": "HWC"}}],
+                    [rgb_panel(albedo_vis)],
                 )
         
         # Explicit cleanup of large tensors to prevent memory leaks
         del texture_map_outputs
         del pred_x0, gt_x0, mask_map, pred_img, gt_img
-        
-        # 3D rendering disabled - only save UV maps for faster validation
-        # Uncomment below if you need 3D rendered views
-        """
-            img = rearrange(img, "B C H W -> B H W C")
-            mvp_mtx = batch['mvp_mtx']
-            mesh = batch['mesh']
-            # Extract integer values from height/width tensors/lists
-            if torch.is_tensor(batch['height']):
-                height = batch['height'].item()
-            elif isinstance(batch['height'], (list, tuple)):
-                height = int(batch['height'][0])
-            else:
-                height = int(batch['height'])
-            
-            if torch.is_tensor(batch['width']):
-                width = batch['width'].item()
-            elif isinstance(batch['width'], (list, tuple)):
-                width = int(batch['width'][0])
-            else:
-                width = int(batch['width'])
-
-            pad_img = uv_padding(img.squeeze(0), texture_map_outputs['mask_map'].squeeze(0).squeeze(0), iterations=2)
-            
-            render_out = render_batched_meshes(self.ctx, mesh, pad_img, mvp_mtx, height, width, background_color)
-
-            # Dynamic view grid layout based on actual number of views
-            num_views = render_out.shape[1]
-            # Try to make a square-ish grid, prefer more columns than rows
-            V1 = int(math.sqrt(num_views))
-            V2 = (num_views + V1 - 1) // V1  # Ceiling division
-            
-            # If not evenly divisible, pad with zeros
-            if V1 * V2 != num_views:
-                padding = V1 * V2 - num_views
-                render_out = torch.cat([render_out, torch.zeros_like(render_out[:, :1]).expand(-1, padding, -1, -1, -1)], dim=1)
-            
-            img_format = [{
-                "type": "rgb",
-                "img": rearrange(render_out, "B (V1 V2) H W C -> (B V1 H) (V2 W) C", V1=V1),
-                "kwargs": {"data_format": "HWC"},
-            }]
-
-            self.save_image_grid(
-                f"it{self.true_global_step}-test/preview/render_{key}_{self.global_rank}_{batch_idx}.jpg",
-                img_format,
-                name=f"test_step_output_{self.global_rank}_{batch_idx}",
-                step=None,
-            )
-
-            render_images[key] = torch.clamp(rearrange(render_out, "B V H W C -> (B V) C H W"), min=0, max=1)
-            """
         
     def test_pipeline(self, batch):
         diffusion_data = self.prepare_diffusion_data(batch)

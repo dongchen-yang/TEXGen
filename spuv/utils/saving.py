@@ -110,9 +110,9 @@ class SaverMixin:
         img = self.get_rgb_image_(img, data_format, data_range)
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
-            import wandb as _wandb
-            if _wandb.run is not None:
-                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step, "epoch": self.current_epoch})
+            self._wandb_logger.log_image(
+                key=name, images=[self.get_save_path(filename)], step=step
+            )
 
     def save_rgb_image(
         self,
@@ -219,9 +219,9 @@ class SaverMixin:
         img = self.get_grayscale_image_(img, data_range, cmap)
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
-            import wandb as _wandb
-            if _wandb.run is not None:
-                _wandb.log({name: _wandb.Image(self.get_save_path(filename)), "trainer/global_step": self.global_step, "epoch": self.current_epoch})
+            self._wandb_logger.log_image(
+                key=name, images=[self.get_save_path(filename)], step=step
+            )
 
     def save_grayscale_image(
         self,
@@ -300,10 +300,7 @@ class SaverMixin:
 
         cv2.imwrite(save_path, img)
         if name and self._wandb_logger:
-            import wandb as _wandb
-            if _wandb.run is not None:
-                log_step = step if step is not None else self.global_step
-                _wandb.log({name: _wandb.Image(save_path), "trainer/global_step": log_step, "epoch": self.current_epoch})
+            self._wandb_logger.log_image(key=name, images=[save_path], step=step)
         return save_path
 
     def save_image(self, filename, img) -> str:
