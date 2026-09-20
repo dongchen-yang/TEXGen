@@ -1,28 +1,32 @@
 import os
-from typing import Tuple
+import time
+from typing import Optional, Tuple, Union
 from dataclasses import dataclass
+import random
+from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import math
 from einops import rearrange
+import torch.nn.utils.weight_norm as weight_norm
 
+import nvdiffrast.torch as dr
 from torchsparse import nn as spnn
 from torchsparse import SparseTensor
+from timm.models.vision_transformer import Mlp
 
+import spuv
 from .utils.uv_operators import *
 from .utils.emb_utils import *
+from .utils.feature_baking import bake_image_feature_to_uv
 from .utils.sparse_utils import *
 from spuv.models.renderers.rasterize import NVDiffRasterizerContext
 from spuv.utils.misc import get_device
+from spuv.utils.mesh_utils import uv_padding
 from spuv.utils.misc import time_recorder as tr
-from spuv.utils.base import BaseModule
-from spuv.utils.typing import *
-
-from spuv.models.sparse_networks.ptv3_model_texgen import Point as PTV3_Point
-from spuv.models.sparse_networks.ptv3_model_texgen import (
-    PointSequential,
-    TimeBlock,
-)
 
 # Escape hatch for GPUs where flash-attn is unavailable. flash-attn 2.x targets
 # Ampere/Ada/Hopper; on RTX PRO 6000 Blackwell (sm_120) the source build ran ~45 min
@@ -43,6 +47,16 @@ from spuv.models.sparse_networks.ptv3_model_texgen import (
 # **kwargs but drops them when constructing UV_DitBlock, so a config-driven flag
 # would mean changing three signatures plus the backbone Config dataclass.
 _ENABLE_FLASH = os.environ.get("TEXGEN_ENABLE_FLASH", "1") not in ("0", "false", "False")
+from spuv.utils.base import BaseModule
+from spuv.utils.typing import *
+
+from spuv.models.sparse_networks.ptv3_model_texgen import Point as PTV3_Point
+from spuv.models.sparse_networks.ptv3_model_texgen import (
+    PointSequential,
+    TimeBlock,
+    SerializedPooling,
+    SerializedUnpooling,
+)
 
 
 class PointUVNet(BaseModule):
@@ -58,6 +72,11 @@ class PointUVNet(BaseModule):
         window_size: Tuple[int] = (32, 32, 32, 32)
         skip_input: bool = True
         skip_type: str = "baked_texture"
+        # Concatenate the GT emission mask as an extra input channel (the oracle-conditioning
+        # variant). Must be requested explicitly: it hands the model a mask of the very
+        # emission it is trained to predict, so it can never be enabled as a side effect of
+        # a channel-count arithmetic.
+        use_gt_emission_mask_cond: bool = False
         num_heads: Tuple[int] = (4, 4, 4, 4)
         point_block_num: Tuple[int] = (2, 2, 2, 2)
         use_uv_head: bool = True
@@ -202,10 +221,14 @@ class PointUVNet(BaseModule):
         :param x_dense: dense feature map
         :param mask_map: dense mask map
         :param position_map: dense position map
-        :param image_info: 'baked_texture' and 'baked_weights', UV maps the dataloader pre-bakes
         :return:
         """
         skip_x = x_dense
+
+        cond_image_info = {
+            "rgb": image_info["rgb_cond"],
+            "mvp_mtx": image_info["mvp_mtx_cond"],
+        }
 
         # for cfg
         input_embeddings = []
@@ -214,25 +237,21 @@ class PointUVNet(BaseModule):
             clip_embedding_null = torch.zeros_like(clip_embeddings[i], device=x_dense.device, dtype=x_dense.dtype)
             clip_embedding = condition_drop * clip_embedding_null + (1 - condition_drop) * clip_embeddings[i]
             input_embeddings.append(clip_embedding)
-        # The dataloader's pre-baked UV maps replace bake_image_feature_to_uv; values in [0, 1] (or [0, 255]) go to [-1, 1]
-        baked_texture = image_info['baked_texture']
-        baked_weights = image_info['baked_weights']
-        if data_normalization and baked_texture.max() > 1.0:
-            baked_texture = (baked_texture / 255.0) * 2.0 - 1.0
-        elif data_normalization and baked_texture.max() <= 1.0 and baked_texture.min() >= 0.0:
-            baked_texture = baked_texture * 2.0 - 1.0
+        tr.start("bake")
+        with torch.no_grad():
+            baked_texture, baked_weights = bake_image_feature_to_uv(self.ctx, mesh, cond_image_info, position_map.permute(0, 2, 3, 1))
+            if data_normalization:
+                baked_texture = (2 * baked_texture - 1).detach()
+            else:
+                baked_texture = baked_texture.detach()
+            baked_weights = baked_weights.detach()
+        tr.end("bake")
 
-        # 13 channels: noisy emission (3), position (3), baked_texture = albedo (3) + metallic (1) +
-        # roughness (1) + alpha (1), occupancy mask (1); 12 when the data carries no alpha
         x_concat = torch.cat([x_dense, position_map, baked_texture, baked_weights], dim=1)
-        assert x_concat.shape[1] == self.cfg.in_channels, (
-            f"assembled input is {x_concat.shape[1]}ch but cfg.in_channels={self.cfg.in_channels}; "
-            f"parts={[t.shape[1] for t in (x_dense, position_map, baked_texture, baked_weights)]}"
-        )
         x_dense = self.input_conv(x_concat) * mask_map
         if torch.isnan(x_dense).any():
             print("x_dense has NaN values")
-            raise ValueError("NaN detected in input processing")
+            breakpoint()
 
         pyramid_features = []
         pyramid_mask = []
@@ -299,11 +318,9 @@ class PointUVNet(BaseModule):
             "baked_weights": baked_weights,
         }
 
-        # the baked_texture and adaptive skips add albedo, baked_texture's first 3 channels, to the
-        # 3 output channels; the noise_input skip adds the noisy emission instead
         if self.cfg.skip_input:
             if self.cfg.skip_type == "baked_texture":
-                return x_output + baked_weights * baked_texture[:, :3], addition_info
+                return x_output + baked_weights * baked_texture, addition_info
             elif self.cfg.skip_type == "noise_input":
                 return x_output + skip_x, addition_info
             elif self.cfg.skip_type == "adaptive":
@@ -315,7 +332,7 @@ class PointUVNet(BaseModule):
                 output_scale_map, skip_scale_map = skip_map.chunk(2, dim=1)
 
                 x1 = (1-output_scale_map) * x_output
-                x2 = skip_scale_map * (x0_scale * baked_texture[:, :3] + input_scale * skip_x)
+                x2 = skip_scale_map * (x0_scale * baked_texture + input_scale * skip_x)
                 x_output = x1 + x2
 
                 addition_info["skip_scale_map"] = skip_scale_map

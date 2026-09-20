@@ -9,7 +9,7 @@ This script matches the validation process from training:
 - Respects data_normalization setting from config
 """
 
-import argparse
+import hashlib
 import os
 import sys
 import torch
@@ -21,7 +21,15 @@ import pandas as pd
 
 # Add TEXGen to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spuv.utils.seed import sample_seed
+
+
+def sample_seed(sha: str, seed: int) -> int:
+    """Per-shape RNG seed for `(sha, seed)`. Order-, batch- and skip-independent.
+
+    VERBATIM COPY of evaluation/newdata_eval/seedutil.py in the parent lightgen repo, duplicated
+    because this repo is cloned standalone on cs-venus-05. Keep the copies byte-identical.
+    """
+    return int.from_bytes(hashlib.sha256(f"{sha}:{seed}".encode()).digest()[:8], "big")
 
 
 def find_sample_index(sample_id, parquet_file):
@@ -35,11 +43,16 @@ def find_sample_index(sample_id, parquet_file):
     else:
         return None
 
-def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parquet_file, seed=0):
-    """Run inference on specific samples and save results."""
+def inference_samples(checkpoint_path, sample_ids, output_dir, data_root=None,
+                      parquet_file=None, seed=0):
+    """Run inference on specific samples and save results.
+
+    data_root/parquet_file override the hardcoded full-dataset paths (used by the newdata_eval
+    harness to point at a staged native-somage root that also carries thumbnails/).
+    """
     
     print("=" * 80)
-    print("TEXGen-Emission inference for a shape list")
+    print("LightGen Inference for Specific Samples")
     print("=" * 80)
     
     # Load checkpoint and config
@@ -67,29 +80,29 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             'checkpoint': full_cfg.get('checkpoint', {}),
         })
     else:
-        raise FileNotFoundError(
-            "no configs/parsed.yaml beside the checkpoint dir: looked at "
-            f"{ckpt_path_obj.parent.parent / 'configs' / 'parsed.yaml'} and {config_path}")
+        print(f"   Warning: Config not found at {config_path}, using default")
+        cfg = OmegaConf.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs/lightgen_pointuv_256_batch32_pretrained.yaml"))
     
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     print(f"   ✓ Checkpoint loaded (epoch {checkpoint.get('epoch', 'unknown')})")
     
     # Load data module
     print("\n2. Setting up data module...")
-    from spuv.data.mesh_uv import MeshUVDataModule
+    from spuv.data.lightgen_uv import LightGenDataModule, LightGenDataset
     
-    # The data root and parquet come from the caller, not from the run's parsed.yaml
+    # Override to use full dataset (not filtered) to find all samples
     cfg_data = cfg.data.copy()
-    cfg_data.parquet_file = parquet_file
-    cfg_data.data_root = data_root
+    # Use full dataset paths
+    cfg_data.parquet_file = parquet_file or "/localhome/dya78/code/lightgen/data/baked_uv/df_SomgProc_final.parquet"
+    cfg_data.data_root = data_root or "/localhome/dya78/code/lightgen/data/baked_uv"
     print(f"   Using dataset: {cfg_data.parquet_file}")
     print(f"   data_root: {cfg_data.data_root} (thumbnails from {cfg_data.data_root}/thumbnails/)")
     
-    # No split: positions are looked up in the whole success-filtered parquet below
+    # Don't apply train/val/test filters
     cfg_data.test_indices = None
     
-    # The test dataset over the whole parquet; shapes are picked by position below
-    data_module = MeshUVDataModule(cfg_data)
+    # Create a custom dataset that only loads specific samples
+    data_module = LightGenDataModule(cfg_data)
     data_module.setup('test')
     
     # Find indices for our sample IDs
@@ -111,11 +124,11 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
     
     # Load the model
     print("\n4. Loading model...")
-    from spuv.systems.texgen_emission_test import TEXGenDiffusion
+    from spuv.systems.lightgen_system import LightGenSystem
     
     # Create model from config first (avoids config merge issues)
     # Pass only the system config, not the full config
-    model = TEXGenDiffusion(cfg.system)
+    model = LightGenSystem(cfg.system)
     
     # Load weights from checkpoint
     state_dict = checkpoint['state_dict']
@@ -136,13 +149,15 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
     val_with_ema = cfg.system.get('val_with_ema', True)
     data_normalization = cfg.system.get('data_normalization', True)
     
-    print("\n6. Config settings:")
+    print(f"\n6. Config settings:")
     print(f"   - use_ema: {use_ema}")
     print(f"   - val_with_ema: {val_with_ema}")
     print(f"   - data_normalization: {data_normalization}")
     
     # Run inference for each sample
     print("\n7. Running inference...")
+    
+    all_results = []  # Store results for overall visualization
     
     for sample_id, idx in sample_indices.items():
         print(f"\n   Processing: {sample_id} (index {idx})")
@@ -161,6 +176,9 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
                 batch[key] = value.unsqueeze(0).to(device)
             elif isinstance(value, dict):
                 batch[key] = value
+            elif key == 'thumbnail' and isinstance(value, torch.Tensor):
+                # Thumbnail should be moved to device but keep its shape
+                batch[key] = value.to(device)
             elif isinstance(value, (list, tuple)):
                 batch[key] = [value]
             else:
@@ -169,10 +187,10 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
         # GLOBAL seed, and it must land HERE -- before test_pipeline, not inside it.
         # Three RNG consumers sit downstream and two of them are easy to miss:
         #   * prepare_diffusion_data draws and DISCARDS two CUDA tensors
-        #     (TEXGenDiffusion.prepare_diffusion_data) -- discarded, but they advance the stream;
-        #   * the initial noise, one CUDA draw (TEXGenDiffusion.test_pipeline);
+        #     (lightgen_system.py:247,255) -- discarded, but they advance the stream;
+        #   * the initial noise, one CUDA draw (texgen_test.py:506);
         #   * hundreds of CPU torch.randperm calls per shape from shuffle_orders=True
-        #     (texgen_emission_network.py UVPTVAttnStage/UV_DitBlock -> ptv3_model_texgen.py). That flag is
+        #     (texgen_network.py:621,766 -> ptv3_model_texgen.py:129,703). That flag is
         #     hardcoded and NOT gated on self.training -- the only self.training guard in
         #     either file is attention dropout -- and the permutation CHANGES THE OUTPUT by
         #     reordering the space-filling-curve serialization the attention windows use.
@@ -187,11 +205,11 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             with torch.cuda.amp.autocast(enabled=False):
                 # Use EMA weights if enabled (matching validation)
                 if use_ema and val_with_ema:
-                    print("      Using EMA weights for inference")
+                    print(f"      Using EMA weights for inference")
                     with model.ema_scope("Inference with ema weights"):
                         texture_map_outputs = model.test_pipeline(batch)
                 else:
-                    print("      Using regular weights for inference")
+                    print(f"      Using regular weights for inference")
                     texture_map_outputs = model.test_pipeline(batch)
             
             # Extract results
@@ -222,10 +240,19 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             albedo_img = albedo_map.cpu().permute(1, 2, 0).numpy()
             mask_img = mask_map.cpu().numpy()
             
+            # Get thumbnail - load directly from baked_uv_local since data_root is different
             thumbnail_img = None
-            if 'thumbnail' in batch and batch['thumbnail'] is not None:
+            thumbnail_path = f"/localhome/dya78/code/lightgen/data/baked_uv_local/thumbnails/{sample_id}.png"
+            if os.path.exists(thumbnail_path):
+                thumb_pil = Image.open(thumbnail_path).convert('RGB')
+                thumbnail_img = np.array(thumb_pil).astype(np.float32) / 255.0  # [H, W, 3]
+            elif 'thumbnail' in batch and batch['thumbnail'] is not None:
+                # Fallback to batch thumbnail if available
                 thumbnail = batch['thumbnail']  # [1, 1, H, W, 3]
-                thumbnail_img = (thumbnail[0, 0] if thumbnail.dim() == 5 else thumbnail[0]).cpu().numpy()
+                if thumbnail.dim() == 5:
+                    thumbnail_img = thumbnail[0, 0].cpu().numpy()  # [H, W, 3]
+                else:
+                    thumbnail_img = thumbnail[0].cpu().numpy()
             
             # Save individual images
             sample_dir = output_dir / sample_id
@@ -239,6 +266,15 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             if thumbnail_img is not None:
                 Image.fromarray((thumbnail_img * 255).astype(np.uint8)).save(sample_dir / "thumbnail.png")
             
+            # Store for overall visualization
+            all_results.append({
+                'sample_id': sample_id,
+                'thumbnail': thumbnail_img,
+                'albedo': albedo_img,
+                'gt_emission': gt_img,
+                'pred_emission': pred_img,
+            })
+            
             # Create comparison image (3 columns: input, gt, pred)
             h, w = pred_img.shape[:2]
             comparison = np.zeros((h, w * 3, 3), dtype=np.uint8)
@@ -249,15 +285,16 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             Image.fromarray(comparison).save(sample_dir / "comparison.png")
             
             print(f"      ✓ Saved to {sample_dir}/")
-            print("         - input_albedo.png")
-            print("         - gt_emission.png")
-            print("         - pred_emission.png")
+            print(f"         - input_albedo.png")
+            print(f"         - gt_emission.png")
+            print(f"         - pred_emission.png")
             if thumbnail_img is not None:
-                print("         - thumbnail.png")
-            print("         - comparison.png (input | gt | pred)")
+                print(f"         - thumbnail.png")
+            print(f"         - comparison.png (input | gt | pred)")
             
             # Compute metrics
             from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+            from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
             
             # Expand dims for metrics
             pred_batch = pred_emission.unsqueeze(0)
@@ -278,21 +315,191 @@ def inference_samples(checkpoint_path, sample_ids, output_dir, data_root, parque
             print(f"         PSNR: {psnr.item():.2f} dB")
             print(f"         SSIM: {ssim.item():.4f}")
     
+    # Create overall visualization grid
+    if all_results:
+        print("\n8. Creating overall visualization...")
+        create_overall_visualization(all_results, output_dir)
+
+    # Render multiview images with emission textures using Blender
+    print("\n9. Rendering multiview images with Blender...")
+    render_blender_multiview(sample_indices, output_dir)
+
     print("\n" + "=" * 80)
     print("✓ Inference Complete!")
     print(f"Results saved to: {output_dir}")
     print(f"Settings: EMA={use_ema and val_with_ema}, data_normalization={data_normalization}")
     print("=" * 80)
+    print("\nBlender multiview rendering will be attempted next...")
+
+
+def render_blender_multiview(sample_indices, output_dir):
+    """Render multiview images using Blender instead of NVDiffRast."""
+    import subprocess
+    import sys
+    import os
+
+    # Get the path to the Blender render script
+    blender_script = os.path.join(os.path.dirname(__file__), "render_inference_blender.py")
+
+    # Find Blender executable
+    blender_exe = None
+    possible_paths = [
+        "/localhome/dya78/software/blender-3.2.0-linux-x64/blender",  # From .zshrc
+        "blender",  # If in PATH
+        "/usr/bin/blender",
+        "/usr/local/bin/blender"
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path) or (path == "blender" and subprocess.run(["which", "blender"], capture_output=True).returncode == 0):
+            blender_exe = path
+            break
+
+    if blender_exe is None:
+        print("ERROR: Blender executable not found!")
+        print("Please ensure Blender is installed and in your PATH, or update the path in render_blender_multiview()")
+        return
+
+    # Run the Blender rendering script with Blender
+    cmd = [blender_exe, "--background", "--python", blender_script, "--inference-dir", str(output_dir)]
+
+    print(f"Running: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(blender_script))
+
+        if result.returncode == 0:
+            print("Blender rendering completed successfully!")
+            # Print any output
+            if result.stdout:
+                print("STDOUT:", result.stdout[-500:])  # Last 500 chars
+        else:
+            print(f"Blender rendering failed with return code {result.returncode}")
+            if result.stderr:
+                print("STDERR:", result.stderr[-1000:])  # Last 1000 chars
+            if result.stdout:
+                print("STDOUT:", result.stdout[-500:])  # Last 500 chars
+
+    except Exception as e:
+        print(f"Failed to run Blender rendering: {e}")
+
+
+
+
+def create_overall_visualization(all_results, output_dir):
+    """Create a grid visualization with all samples.
+    
+    Layout: Each row is one sample
+    Columns: Thumbnail | Albedo | GT Emission | Pred Emission
+    """
+    import cv2
+    
+    n_samples = len(all_results)
+    
+    # Get dimensions from first sample
+    h, w = all_results[0]['albedo'].shape[:2]
+    
+    # Spacing between columns and rows
+    col_spacing = 10
+    row_spacing = 10
+    
+    # Get thumbnail dimensions (keep original aspect ratio, scale to match row height)
+    thumb_h = h
+    if all_results[0]['thumbnail'] is not None:
+        orig_thumb = all_results[0]['thumbnail']
+        orig_h, orig_w = orig_thumb.shape[:2]
+        aspect_ratio = orig_w / orig_h
+        thumb_w = int(thumb_h * aspect_ratio)
+    else:
+        thumb_w = h  # Square fallback
+    
+    # Column widths: thumbnail (original aspect) + 3 UV maps
+    col_widths = [thumb_w, w, w, w]
+    total_width = sum(col_widths) + col_spacing * 3  # 3 gaps between 4 columns
+    total_height = n_samples * h + row_spacing * (n_samples - 1)  # gaps between rows
+    
+    # Add header row
+    header_height = 40
+    total_height += header_height
+    
+    # Create white canvas
+    canvas = np.ones((total_height, total_width, 3), dtype=np.uint8) * 255
+    
+    # Add header labels
+    from PIL import ImageDraw, ImageFont
+    canvas_pil = Image.fromarray(canvas)
+    draw = ImageDraw.Draw(canvas_pil)
+    
+    # Try to use a font, fallback to default if not available
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+    except:
+        font = ImageFont.load_default()
+    
+    headers = ["Thumbnail", "Albedo (Input)", "GT Emission", "Pred Emission"]
+    x_positions = [
+        0,
+        col_widths[0] + col_spacing,
+        col_widths[0] + col_spacing + col_widths[1] + col_spacing,
+        col_widths[0] + col_spacing + col_widths[1] + col_spacing + col_widths[2] + col_spacing
+    ]
+    
+    for header, x_pos, col_w in zip(headers, x_positions, col_widths):
+        # Center text in column
+        text_bbox = draw.textbbox((0, 0), header, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_x = x_pos + (col_w - text_width) // 2
+        draw.text((text_x, 10), header, fill=(0, 0, 0), font=font)
+    
+    canvas = np.array(canvas_pil)
+    
+    # Fill in each row
+    for i, result in enumerate(all_results):
+        row_start = header_height + i * (h + row_spacing)
+        
+        # Column 0: Thumbnail (keep aspect ratio, scale height to h)
+        if result['thumbnail'] is not None:
+            thumb = result['thumbnail']
+            orig_h, orig_w = thumb.shape[:2]
+            aspect_ratio = orig_w / orig_h
+            new_w = int(h * aspect_ratio)
+            thumb_resized = cv2.resize(thumb, (new_w, h), interpolation=cv2.INTER_LINEAR)
+            canvas[row_start:row_start + h, 0:new_w] = (thumb_resized * 255).astype(np.uint8)
+        
+        # Column 1: Albedo
+        col_start = col_widths[0] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['albedo'] * 255).astype(np.uint8)
+        
+        # Column 2: GT Emission
+        col_start = col_widths[0] + col_spacing + col_widths[1] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['gt_emission'] * 255).astype(np.uint8)
+        
+        # Column 3: Pred Emission
+        col_start = col_widths[0] + col_spacing + col_widths[1] + col_spacing + col_widths[2] + col_spacing
+        canvas[row_start:row_start + h, col_start:col_start + w] = (result['pred_emission'] * 255).astype(np.uint8)
+    
+    # Save overall visualization
+    output_path = output_dir / "overall_visualization.png"
+    Image.fromarray(canvas).save(output_path)
+    print(f"   ✓ Saved overall visualization to: {output_path}")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Emission inference for a list of shape ids with a trained checkpoint.")
-    ap.add_argument("--ckpt", required=True, help="<run>/ckpts/<file>.ckpt; <run>/configs/parsed.yaml is read beside it")
-    ap.add_argument("--data_root", required=True, help="root with <ditem_dir>/atlas.npz or somage.npz (+ alpha.npy) and thumbnails/<sha>.png")
-    ap.add_argument("--parquet", required=True, help="parquet indexed by shape id, with ditem_dir and success columns")
-    ap.add_argument("--shas_file", required=True, help="one shape id per line")
-    ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--seed", type=int, default=0, help="per-shape noise = sha256(sha:seed)")
-    a = ap.parse_args()
-    shas = [l.strip() for l in open(a.shas_file) if l.strip()]
-    inference_samples(a.ckpt, shas, a.out_dir, data_root=a.data_root, parquet_file=a.parquet, seed=a.seed)
+    checkpoint_path = "/localhome/dya78/code/lightgen/TEXGen/ckpts/epoch=599-step=17400.ckpt"
+    
+    # Test set samples
+    sample_ids = [
+        "008ac92377d547c391a83f96e485c313",
+        "0d66475a413b4c6288178ad94251677f",
+        "0ee07f5656fc41bf9f36bc19e6605017",
+        "20a021a4f4eb4bc6a920d018ef2d02a2",
+        "4532362cb3764e0e90547d886a37f52a",
+        "6cfba09348b64230b274026e175710ed",
+        "9c7467268bf34ada8e57429736dfba19",
+        "fff48e914c4847a08660b9e08b1b733c",
+        "21170b1a94664f2fae7c00c4e2c25577",
+        "f42e52eb50c041cfb4e29310e4a95e33",
+    ]
+    
+    output_dir = "inference_outputs_epoch599"
+    
+    inference_samples(checkpoint_path, sample_ids, output_dir)

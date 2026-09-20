@@ -32,6 +32,3 @@ deprecated/comparisons/generated/
 
 # Local Claude settings under archived experiment dirs
 deprecated/scripts/**/.claude/
-
-# Local Claude state, including its worktrees (a nested worktree would be committed as a gitlink)
-.claude/

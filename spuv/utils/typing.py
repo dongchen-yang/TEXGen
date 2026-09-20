@@ -28,7 +28,19 @@ from typing import (
 
 # Tensor dtype
 # for jaxtyping usage, see https://github.com/google/jaxtyping/blob/main/API.md
-from jaxtyping import Bool, Complex, Float, Inexact, Int, Integer, Num, Shaped, UInt
+try:
+    from jaxtyping import Bool, Complex, Float, Inexact, Int, Integer, Num, Shaped, UInt
+except ImportError:
+    # Fallback definitions if jaxtyping is not available
+    Bool = bool
+    Complex = complex
+    Float = float
+    Inexact = float
+    Int = int
+    Integer = int
+    Num = float
+    Shaped = object
+    UInt = int
 
 # Config type
 from omegaconf import DictConfig
