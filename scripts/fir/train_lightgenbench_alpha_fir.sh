@@ -19,7 +19,18 @@
 #     replaces the md5 gates: the split's indices are POSITIONAL into the parquet, and the
 #     check proves they select exactly the uuids of splits.json, whose sha256 is pinned;
 #   * alpha is a key inside each npz, so the sidecar count gate becomes a key check;
-#   * wandb goes online when the node has a login and reaches the API, else offline.
+#   * wandb goes online when the node has a login and reaches the API, else offline;
+#   * per-GPU MICRO-batch 16 x accumulate_grad_batches 2, not per-GPU batch 32. The
+#     release's atlases are heavier than the paper run's: at per-GPU 32 job 60564907
+#     (fir, 2026-09-19) peaked at 76.15 GB by step ~50 and OOM'd an 80 GB H100 at step ~57,
+#     where the paper run peaked at 65.56 GB on the same card. 4 ranks x 16 x 2 is still
+#     GLOBAL BATCH 128, and Lightning counts OPTIMIZER steps as global_step, so
+#     steps/epoch (285), T_max and max_epochs keep their meaning (the vulcan launcher's
+#     pattern). EMA needs no change: LitEma updates once per micro-batch, but its decay is
+#     min(0.9999, (1+n)/(10+n)) and the cap never binds in this run (n < 89,990), so two
+#     updates per optimizer step give 1 - 9/(5+s) where the paper run had 1 - 9/(10+s).
+#     The config keeps batch_size 32, which is right for a 96 GB card; this launcher
+#     overrides it on the command line.
 #
 # Usage (runs from the workstation OR from fir; it submits either way):
 #   # probe first — separate output dir, so auto_resume can never find it later:
@@ -48,7 +59,8 @@ BRANCH=texgen-74k-v2-venus05
 OUT_SUFFIX=${OUT_SUFFIX:-}
 EXTRA=${EXTRA:-}
 NUM_GPUS=${NUM_GPUS:-4}
-BS=${BS:-32}
+BS=${BS:-16}                  # per-GPU MICRO-batch (see the header)
+ACCUM=${ACCUM:-2}             # accumulate_grad_batches
 GLOBAL_BATCH=${GLOBAL_BATCH:-128}
 CPUS=${CPUS:-48}
 MEM=${MEM:-1024G}
@@ -69,14 +81,14 @@ OUTPUT_DIR=${RUNS}/output_lightgenbench_alpha_v1${OUT_SUFFIX}
 
 # The global batch is the thing being held equal across sites and arms. Refuse rather than
 # quietly train a different effective batch than the paper run.
-ACTUAL=$((NUM_GPUS * BS))
+ACTUAL=$((NUM_GPUS * BS * ACCUM))
 if [ "${ACTUAL}" -ne "${GLOBAL_BATCH}" ]; then
-    echo "REFUSING TO SUBMIT: NUM_GPUS(${NUM_GPUS}) x BS(${BS}) = ${ACTUAL}, expected ${GLOBAL_BATCH}." >&2
+    echo "REFUSING TO SUBMIT: NUM_GPUS(${NUM_GPUS}) x BS(${BS}) x ACCUM(${ACCUM}) = ${ACTUAL}, expected ${GLOBAL_BATCH}." >&2
     exit 1
 fi
 
 echo "Submitting ${NAME}${OUT_SUFFIX}_${TAG}"
-echo "  gpus     : ${NUM_GPUS} x h100  (BS ${BS} -> global ${ACTUAL})"
+echo "  gpus     : ${NUM_GPUS} x h100  (micro-batch ${BS} x accumulate ${ACCUM} -> global ${ACTUAL})"
 echo "  config   : ${CONFIG}"
 echo "  outdir   : ${OUTPUT_DIR}"
 echo "  walltime : ${WALLTIME}   account: ${ACCOUNT}"
@@ -307,7 +319,8 @@ echo "[inodes] /scratch usage before training:"; diskusage_report 2>/dev/null | 
 # save/, cmd.txt AND the offline wandb directory there. RUNS alone does not move it, so a
 # submitter who cannot write the config's baked-in path fails at startup.
 python launch.py --config ${CONFIG} --gpu \$(seq -s, 0 \$(( ${NUM_GPUS} - 1 ))) --train --wandb \\
-    exp_root_dir=${RUNS} checkpoint.dirpath=${OUTPUT_DIR}/ ${EXTRA} &
+    exp_root_dir=${RUNS} checkpoint.dirpath=${OUTPUT_DIR}/ \\
+    data.batch_size=${BS} trainer.accumulate_grad_batches=${ACCUM} ${EXTRA} &
 TRAIN_PID=\$!
 wait "\$TRAIN_PID"
 EXIT_CODE=\$?
